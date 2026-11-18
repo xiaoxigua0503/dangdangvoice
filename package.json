@@ -1,0 +1,48 @@
+{
+  "name": "qw-pages-dynamic-starter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "node scripts/build.mjs",
+    "preview": "vite preview --host 0.0.0.0",
+    "start": "node server/start.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test tests/url-normalization.test.mjs tests/client-storage.test.mjs && node --test tests/runtime.test.mjs",
+    "migrate": "node --env-file-if-exists=.env server/migrate.mjs",
+    "test:accounts": "node --test tests/accounts.test.mjs",
+    "db:maintenance": "node --env-file-if-exists=.env server/maintenance.mjs",
+    "ai:worker": "node server/worker-start.mjs",
+    "ai:admin": "node --env-file-if-exists=.env server/ai-admin.mjs",
+    "test:ai": "node --test tests/ai.test.mjs",
+    "bootstrap:local": "node --env-file-if-exists=.env server/bootstrap.mjs",
+    "owner:admin": "node server/owner-admin.mjs",
+    "release:prepare": "npm run build && node scripts/prepare-deploy.mjs"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "file-type": "^22.3.0",
+    "image-size": "^2.1.0",
+    "ipaddr.js": "^2.5.0",
+    "nodemailer": "^10.6.0",
+    "pg": "^8.23.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "5.2.0",
+    "playwright": "^1.65.1",
+    "typescript": "5.8.3",
+    "vite": "^7.3.8"
+  },
+  "overrides": {
+    "electron-to-chromium": "1.5.395"
+  }
+}

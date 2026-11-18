@@ -1,0 +1,10 @@
+dangdangvoice · QW Pages 线上版源码包
+====================================
+页面地址 : https://waf8xws9.qwenwork.page/
+受管源码 : page app-8f4234b7-4ed153f9 · git HEAD = f36b5035addffcc4e6084d46f62a1cef06e5529f（文档修复提交；功能代码 = V31 线上构建：无状态中继/意图路由/身份守卫/照片墙/记录库/统一日志）
+打包日期 : 2026-11-09
+内容     : server.mjs（relay/analyze/门禁/心跳协议）、src/（React：声纹台·ABSA·水分指数·照片墙·评论记录库·队列与日志）、
+           index.html、tests/（契约8项+模板运行时测试门）、package(+lock)、vite/tsconfig、AGENTS.md、TARGET-VERSION
+已排除   : .git、node_modules、dist、.qw-pages、.playwright-cli、coverage、*.log、.env*（无任何凭据入包）
+复现运行 : npm ci && npm run build && HOST=0.0.0.0 PORT=3000 node server.mjs
+回归验证 : npm test    线上发布 : QW Pages（dynamic, entry=server.mjs, port=8081）
