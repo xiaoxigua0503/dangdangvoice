@@ -1,3 +1,4 @@
+import {REPAIR_PROMPT} from "./ai-review-repair.mjs";
 import {reviewPayload,REVIEW_PROMPT,budgetInput,reviewParts} from "./ai-review.mjs";
 import { SYSTEM_PROMPT, evidenceInstructions } from "./ai-evidence.mjs";
 export function requestBody(config, input, image) {
@@ -8,7 +9,7 @@ export function requestBody(config, input, image) {
     if(!budget.fits)throw Object.assign(new Error('context_budget_exceeded'),{permanent:true});
     const content=[{type:'text',text:JSON.stringify(payload)}];
     for(const i of images)content.push({type:'text',text:JSON.stringify({imageId:i.id})},{type:'image_url',image_url:{url:`data:${i.mime};base64,${i.bytes.toString('base64')}`}});
-    return {model:config.model,messages:[{role:'system',content:REVIEW_PROMPT},{role:'user',content}],response_format:{type:'json_object'},enable_thinking:false,enable_search:false,max_tokens:config.outputTokens,stream:false};
+    return {model:config.model,messages:[{role:'system',content:input.mode==='repair'?REPAIR_PROMPT:REVIEW_PROMPT},{role:'user',content}],response_format:input.textOnlyRepair?{type:'json_schema',json_schema:{name:'ddv_evidence_repair',strict:true,schema:payload.outputSchema}}:{type:'json_object'},enable_thinking:false,enable_search:false,max_tokens:config.outputTokens,stream:false};
   }
   const content = [
     {
@@ -69,6 +70,7 @@ export async function infer(config, input, image, signal, fetcher = fetch) {
     };
   }
   if (!process.env.AI_API_KEY) throw new Error("provider_not_configured");
+  const body = JSON.stringify(requestBody(config, input, image));
   let r;
   try { r = await fetcher(
     config.endpoint.replace(/\/$/, "") + "/chat/completions",
@@ -78,7 +80,7 @@ export async function infer(config, input, image, signal, fetcher = fetch) {
         "content-type": "application/json",
         authorization: `Bearer ${process.env.AI_API_KEY}`,
       },
-      body: JSON.stringify(requestBody(config, input, image)),
+      body,
       signal: AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)]),
       redirect: "error",
     },
@@ -117,7 +119,7 @@ export async function infer(config, input, image, signal, fetcher = fetch) {
   const providerError = (code) =>
     Object.assign(new Error(code), { providerUsage: usage });
   if (d.choices?.[0]?.finish_reason !== "stop")
-    throw providerError("provider_output_incomplete");
+    throw Object.assign(providerError("provider_output_incomplete"),{providerDiagnostic:{finishReason:d.choices?.[0]?.finish_reason||null,partialContent:typeof d.choices?.[0]?.message?.content==='string'?d.choices[0].message.content.slice(0,30000):null}});
   let result;
   try {
     result = JSON.parse(d.choices[0].message.content);

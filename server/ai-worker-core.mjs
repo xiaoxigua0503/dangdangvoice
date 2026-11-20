@@ -1,9 +1,12 @@
+import {AI_ENGINE_VERSION} from './ai-engine-version.mjs';
+import {repairPlan, applyRepair, REPAIR_PROMPT, constrainedRepairSchema, priorImageObservations, scalarFieldSources} from "./ai-review-repair.mjs";
+import {advertiseWorker, supportsUnit, WORKER_CAPABILITIES} from "./ai-pipeline.mjs";
 import {prepareReview,reviewImages} from './ai-review-prepare.mjs';
 import {validateReview,REVIEW_PROMPT,reviewParts} from './ai-review.mjs';
 import {insertReviewUnits} from './ai-review-jobs.mjs';
 import { randomUUID } from "node:crypto";
 import { pool } from "./db.mjs";
-import { digest } from "./ai-config.mjs";
+import { digest, PROMPT_VERSION } from "./ai-config.mjs";
 import { infer, usageFrom } from "./ai-provider.mjs";
 import { downloadImage } from "./ai-images.mjs";
 import { validateResult, SYSTEM_PROMPT } from "./ai-evidence.mjs";
@@ -66,13 +69,15 @@ export async function claim(c, provider = process.env.AI_PROVIDER || "qwen") {
   if (!slot) return null;
   await c.query("BEGIN");
   try {
+    await advertiseWorker(c);
     const candidates = (
       await c.query(
-        `SELECT w.*,j.user_id,j.config,j.config_hash FROM ai_units w JOIN ai_jobs j ON j.id=w.job_id JOIN users a ON a.id=j.user_id WHERE ($3::uuid IS NULL OR j.id=$3::uuid) AND a.plan='pro' AND a.disabled_at IS NULL AND (a.pro_expires_at IS NULL OR a.pro_expires_at>now()) AND a.verified_at IS NOT NULL AND j.config->>'provider'=$2 AND j.state IN ('queued','running') AND ((w.state='pending' AND w.next_at<=now()) OR (w.state='running' AND w.lease_until<now())) AND (w.state='running' OR (SELECT count(*) FROM ai_units active JOIN ai_jobs ownerjob ON ownerjob.id=active.job_id WHERE ownerjob.user_id=j.user_id AND active.state='running' AND active.lease_until>now())<$1) ORDER BY w.next_at,w.id FOR UPDATE OF w SKIP LOCKED LIMIT 32`,
-        [runtime.user_concurrency, provider, process.env.AI_WORKER_JOB_ID || null],
+        `SELECT w.*,j.user_id,j.config,j.config_hash FROM ai_units w JOIN ai_jobs j ON j.id=w.job_id JOIN users a ON a.id=j.user_id WHERE ($3::uuid IS NULL OR j.id=$3::uuid) AND EXISTS (SELECT 1 FROM jsonb_each($4::jsonb) cap WHERE cap.key=coalesce(j.config->>'pipelineVersion',CASE j.config->>'schemaVersion' WHEN '1' THEN 'evidence-v1' WHEN '2' THEN 'product-review-v2' END) AND cap.value->>'schema'=j.config->>'schemaVersion' AND (j.config->>'executorVersion' IS NULL OR cap.value->>'engineVersion'=j.config->>'executorVersion') AND (cap.value->'kinds') ? w.kind) AND a.plan='pro' AND a.disabled_at IS NULL AND (a.pro_expires_at IS NULL OR a.pro_expires_at>now()) AND a.verified_at IS NOT NULL AND j.config->>'provider'=$2 AND j.state IN ('queued','running') AND ((w.state='pending' AND w.next_at<=now()) OR (w.state='running' AND w.lease_until<now())) AND (w.state='running' OR (SELECT count(*) FROM ai_units active JOIN ai_jobs ownerjob ON ownerjob.id=active.job_id WHERE ownerjob.user_id=j.user_id AND active.state='running' AND active.lease_until>now())<$1) ORDER BY w.next_at,w.id FOR UPDATE OF w SKIP LOCKED LIMIT 32`,
+        [runtime.user_concurrency, provider, process.env.AI_WORKER_JOB_ID || null, JSON.stringify(WORKER_CAPABILITIES)],
       )
     ).rows;
     for (const unit of candidates) {
+      if (!supportsUnit(unit.config,unit.kind)) continue;
       if (!(await tryLock(c, "unit:" + unit.id))) continue;
       let ownerSlot = false;
       for (let i = 0; i < runtime.user_concurrency; i++) {
@@ -184,7 +189,7 @@ export async function runOne({
   let unit,
     heartbeat,
     usage = {},
-    cacheHit = false, stage = "claim";
+    cacheHit = false, stage = "claim", rejectedValidation=null;
   const phaseMs={};let phaseAt=Date.now();
   const markStage=name=>{phaseMs[stage]=(phaseMs[stage]||0)+Date.now()-phaseAt;phaseAt=Date.now();stage=name;};
   const log = (event, extra = {}) => console.log("ai_unit " + JSON.stringify({at:new Date().toISOString(),event, job:unit?.job_id, unit:unit?.id, kind:unit?.kind, stage, ...extra}));
@@ -221,9 +226,21 @@ export async function runOne({
         ? await imageFor(c, unit, downloadFn, workSignal)
         : null;
     markStage("cache");
+    const prior = v2 ? (await c.query("SELECT validation FROM ai_attempts WHERE unit_id=$1 AND jsonb_typeof(validation->'draft')='object' ORDER BY id DESC LIMIT 1",[unit.id])).rows[0]?.validation : null;
+    let feedbackIssues=prior?.issues;
+    if(v2 && prior?.draft) {
+      try {validateReview(prior.draft,{...unit.input,parts:reviewParts(unit.input)});}
+      catch(e) {feedbackIssues=[...(prior.issues||[]),...(e.validationIssues||[])];}
+    }
+    const repair=v2&&unit.kind!=='prepare'?repairPlan(prior?.draft,feedbackIssues):null;
+    const observations=repair?priorImageObservations(prior.draft,repair.targets):[];
+    const textOnlyRepair=!!repair && (observations.length>0||(Array.isArray(image)&&image.length===0));
+    const fieldSources=repair&&textOnlyRepair?scalarFieldSources(repair,prior.draft,unit.input,observations):undefined;
     const cacheKey = digest({
       config: unit.config_hash,
-      prompt: digest(v2?REVIEW_PROMPT:SYSTEM_PROMPT),
+      engineVersion:AI_ENGINE_VERSION,
+      prompt: digest(repair?REPAIR_PROMPT:v2?REVIEW_PROMPT:SYSTEM_PROMPT),
+      repair:repair?{key:repair.key,textOnly:textOnlyRepair}:null,
       kind: unit.kind,
       input: unit.input,
       parts: unit.input.parts,
@@ -253,23 +270,29 @@ export async function runOne({
       result = v2?validateReview(remapped,{...unit.input,parts:reviewParts(unit.input)}):validateResult(remapped, unit.input);
     } else {
       markStage("provider");
-      log("provider_started", {model:unit.config.model, image:!!image});
+      log("provider_started", {model:unit.config.model, image:Array.isArray(image)?!textOnlyRepair&&image.length>0:!!image,mode:repair?(textOnlyRepair?"text_repair":"multimodal_repair"):unit.kind,repairTargets:repair?.targets});
       const response = await inferFn(
         unit.config,
-        {...unit.input,previousValidationError:["invalid_reference","invented_quote","invalid_structure","missing_evidence","unsupported_statistics","unsupported_evidence_claim","definitive_authenticity_claim"].includes(unit.error)?unit.error:undefined},
-        image,
+        {...unit.input,...(repair?{mode:"repair",textOnlyRepair,priorImageObservations:observations,fieldSources,repairTargets:repair.entries.map(({path,key})=>({path,key})),responseSchema:textOnlyRepair?constrainedRepairSchema(repair,unit.input):repair.schema}:{}),validationFeedback:feedbackIssues?{issues:feedbackIssues}:undefined,previousValidationError:["invalid_reference","invented_quote","invalid_structure","missing_evidence","unsupported_statistics","unsupported_evidence_claim","definitive_authenticity_claim"].includes(unit.error)?unit.error:undefined},
+        textOnlyRepair?[]:image,
         workSignal,
       );
       usage = response.usage || {};
       markStage("validation");
-      try {result = v2?validateReview(response.result,{...unit.input,parts:reviewParts(unit.input)}):validateResult(response.result, unit.input);} catch(e) {
-        log("validation_rejected",{code:e.message,issues:e.validationIssues,allowedComments:[...new Set(unit.input.parts.map(p=>p.commentId))],imageId:unit.input.imageId||null,findings:Array.isArray(response.result?.findings)?response.result.findings.length:null});
+      let candidate=repair?prior.draft:response.result;
+      try {
+        if(repair)candidate=applyRepair(response.result,prior.draft,repair,{textOnly:textOnlyRepair});
+        result = v2?validateReview(candidate,{...unit.input,parts:reviewParts(unit.input)}):validateResult(candidate, unit.input);
+        if(repair)usage={...usage,repair:{paths:repair.targets,sourceDraftHash:digest(prior.draft),textOnly:textOnlyRepair}};
+      } catch(e) {
+        if(v2)rejectedValidation={issues:e.validationIssues||[{code:e.message}],draft:candidate,promptVersion:PROMPT_VERSION,executedPromptHash:digest(repair?REPAIR_PROMPT:REVIEW_PROMPT)};
+        log("validation_rejected",{code:e.message,issues:e.validationIssues?.map(({code,path,rule})=>({code,path,rule})),allowedComments:[...new Set(unit.input.parts.map(p=>p.commentId))],imageId:unit.input.imageId||null,findings:Array.isArray(response.result?.findings)?response.result.findings.length:null});
         throw e;
       }
     }
     if (control.signal.aborted) throw new Error("aborted");
     markStage("persist");
-    usage={...usage,phaseMs};
+    usage={...usage,phaseMs,execution:{engineVersion:AI_ENGINE_VERSION,promptVersion:unit.config.schemaVersion===2?PROMPT_VERSION:unit.config.promptVersion,schemaVersion:unit.config.schemaVersion,pipelineVersion:unit.config.pipelineVersion|| (unit.config.schemaVersion===2?"product-review-v2":"evidence-v1")}};
     await c.query("BEGIN");
     const owned = (
       await c.query(
@@ -302,6 +325,7 @@ export async function runOne({
     await c.query("ROLLBACK").catch(() => {});
     if (!unit?.id) throw e;
     if (e.providerUsage) usage = usageFrom(e.providerUsage);
+    if(e.providerDiagnostic)rejectedValidation={issues:[{code:e.message,path:"provider"}],providerDiagnostic:e.providerDiagnostic,promptVersion:PROMPT_VERSION};
     const code = safeErrors.has(e.message) || /^(?:provider_http_\d{3}|provider_timeout|provider_network_error|provider_quota_exhausted|image_http_\d{3}|image_timeout)$/.test(e.message)
       ? e.message
       : control.signal.aborted
@@ -310,7 +334,7 @@ export async function runOne({
             ["AbortError", "TimeoutError"].includes(e.name)
           ? "request_timeout"
           : "worker_error";
-    markStage("failed");usage={...usage,phaseMs};
+    markStage("failed");usage={...usage,phaseMs,execution:{engineVersion:AI_ENGINE_VERSION,promptVersion:unit.config.schemaVersion===2?PROMPT_VERSION:unit.config.promptVersion,schemaVersion:unit.config.schemaVersion,pipelineVersion:unit.config.pipelineVersion|| (unit.config.schemaVersion===2?"product-review-v2":"evidence-v1")}};
     log("failed", {code, phaseMs, httpStatus:e.httpStatus, network:networkErrors(e)});
     const permanent =
       e.permanent ||
@@ -356,8 +380,8 @@ export async function runOne({
             [unit.job_id, unit.input.imageId, code],
           );
         await c.query(
-          "UPDATE ai_attempts SET state=$2,ended_at=now(),error=$3,usage=$4 WHERE id=$1",
-          [unit.attemptId, state, code, usage],
+          "UPDATE ai_attempts SET state=$2,ended_at=now(),error=$3,usage=$4,validation=$5 WHERE id=$1",
+          [unit.attemptId, state, code, usage, rejectedValidation],
         );
         await finalize(c, unit.job_id);
       }

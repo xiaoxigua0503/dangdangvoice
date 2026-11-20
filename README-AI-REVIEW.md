@@ -40,7 +40,7 @@ npm run build
 node --env-file-if-exists=.env server/migrate.mjs
 ```
 
-确认 `004_product_review.sql` 已应用，再重启现有 VM web 服务与 worker 服务（使用当前运维的 systemd/进程管理器和环境配置，无需新建实例）。web 运行 `npm start`，worker 运行 `npm run ai:worker`，保持同一 PostgreSQL，worker 使用支持会话 advisory lock 的直连地址。继续使用当前 `AI_MODEL`、`AI_BASE_URL`、`AI_API_KEY`，不要复制本地凭据。worker 启动会检查004迁移。
+确认迁移已应用至 `006_ai_engine_fingerprint.sql`，再重启现有 VM web 服务与 worker 服务（使用当前运维的 systemd/进程管理器和环境配置，无需新建实例）。web 运行 `npm start`，worker 运行 `npm run ai:worker`，保持同一 PostgreSQL，worker 使用支持会话 advisory lock 的直连地址。继续使用当前 `AI_MODEL`、`AI_BASE_URL`、`AI_API_KEY`，不要复制本地凭据。worker 启动会检查006迁移。
 
 先以 `AI_WORKER_ENABLED=false` 检查 web 登录、历史与报告读取，再按原部署环境开启 worker。单任务验证可额外配置 `AI_WORKER_JOB_ID=<owned-job-uuid>` 限定领取范围；验证后移除该临时限制。未验证 SMTP 投递，不声称邮件可用。
 
@@ -66,3 +66,37 @@ node --env-file-if-exists=.env server/migrate.mjs
 UI 用明确标记的 local fixture 检查：桌面/390px手机布局、主文章、默认收起的质量/技术详情、引用打开评论和原图、质量分类筛选均正常；浏览器无 page error，手机 scrollWidth=viewport=390。fixture 不是已通过验收的真实 AI 输出。
 
 补充执行了少量定向脚本（不调用模型、不运行 test suite）：1000个文本片段预算分为2步且无片段丢失；拒绝不存在引用、编造引文、无依据百分比和图文真实性推断；重复原文/字节对照；事务内验证多步综合入队、2/2评论覆盖及重读后重建综合，事务最终全部回滚。预算规划该输入耗时69ms。worker 已增加各阶段 phaseMs 日志/attempt usage，后续任务可直接追踪下载、请求、校验和保存耗时。
+
+## 后续修复与真实 UI 验收（接续 8821700，2026-11-20）
+
+本节取代上一节“真实成文尚未验收”的状态：原 local task `5f0e6ad9-7841-404d-b80c-de84ad625c6a` 已形成非 mock 的真实综合报告，逐段复核来源，并在实际登录应用 UI 验收通过。仍未部署 VM/Vercel，未调用 production 应用 API，未执行测试套件。原始快照、评论、图片与其它历史报告保留。
+
+### 根因与修复
+
+- 原输出把商家宣传扩成学术/收藏价值，将图文关联当作真实性证明，并出现跨评论借用事实、正文技术 ID 与错误图片抄字。原检查维持，新增对应的来源/程度/因果和质量标签检查；不以普通负面体验充当异常评价依据。validation 现在返回全部错误位置，失败输出留在私有 `ai_attempts.validation`，不作为完成正文。
+- 将失败整篇草稿重新送入模型会造成措辞锚定。retry 改为错误清单与对应原始来源；需要修复时优先只改失败的 scalar 字段，其它模型段落及引用保持原样。每个字段仅收到自己所引评论/既有图片观察，不能借其它字段的事实。所有合并结果再次经过完整 schema、引文、引用类型、来源与语义限制校验。
+- 官方[结构化输出说明](https://help.aliyun.com/zh/model-studio/qwen-structured-output)明确：多模态 `json_schema` 自动降为 `json_object`。图文读取继续以应用验证为准；已有视觉观察后的 text-only 局部修订使用真正的 `json_schema` strict 解码，短字符串、固定字段与正文 ID 限制。text-only 不创造新图像细节或新的图文一致/冲突结论。复杂修复 schema 曾导致 output 截断，现优先使用少量 scalar 字段，保留4096输出上限，无模型/endpoint切换。
+- 统计口径集中在文章页脚并可展开，段落用轻量“范围”按钮关联，不再重复铺开所有统计数字。报告页脚明确显示经过局部修订及没有重新读图。
+
+### Worker 版本协议与005/006迁移
+
+应用 `005_ai_worker_protocol.sql` 和 `006_ai_engine_fingerprint.sql`，不删除或重建旧数据。worker 在领取事务中声明代码内固定的 pipeline/schema/kind 能力；SQL 查询只选支持的组合。PostgreSQL claim trigger 另行阻止未声明 v2 能力的旧进程领取 v2/future 任务，错误为 `worker_pipeline_incompatible`，发生在插入 attempt/调用 provider 之前。能力声明仅在当前事务有效，防止连接复用留下能力声明。v1 text/image 任务保留兼容通道。
+
+本地检查了仍在运行的旧 worker，已停止该旧进程。以回滚 transaction 验证：无声明的旧 worker 更新 v2 lease 被拒绝，新能力声明被接受；新 worker 对未知 pipeline/schema 不选取。兼容 worker 以 disabled 且指定 task 的方式检查启动，不领取 backlog。生产尚未应用这些迁移。新任务还记录启动时捕获的 engine 源码 fingerprint；即使 pipeline/schema 没变，旧进程也不能领取新代码创建的任务。fingerprint 由固定源码清单生成，不读取密钥；web 和 worker 应使用同一发布物，修改文件后必须重启两者。旧任务没有 fingerprint 时走明确的兼容路径，并记录实际执行版本。
+
+VM 更新仍须先停止旧 worker，备份并应用全部迁移至006，再重启新 web/worker。不要只更新 web 并让旧进程继续存活；DB trigger 是保护，不是代替正常滚动升级。历史任务配置保留创建时的 prompt 版本，新的尝试另记实际 `usage.execution` 及 `usage.repair`，缓存包含实际 prompt 和修复来源 hash。
+
+### 实际验收结果
+
+原 task 输入仍为6条评论、2张已保存真实图片；全文/图片未重新抓取。程序标出的5条短评论与不可变原文逐一对应；两张图片仍关联原来的同一条评论。图像证据接口返回的字节 SHA-256 与任务保存值一致。
+
+在真实 `/app?aiJob=…` 页面、真实登录及本地 API 下验证，无报告 fixture/mock：
+
+- 真实正文可见，结论及低信息量描述的 citation 与对应 comment 匹配；原评论链接正确。
+- 图片按钮打开保存原图；图片/评论关联和字节 hash 正确。
+- 质量分类能筛选到5条相应原文；默认收起，桌面和390px手机均可读，手机宽度390/390，无 page error。
+- refresh 后相同报告仍可读。验收前/后 provider 请求记录均为15，页面没有 AI POST 请求，没有重新生成。
+
+**总计15次实际 provider HTTP请求：上一轮5次、本轮10次。**另有1次构建 payload 的内部失败发生在 HTTP 之前，不计 provider 请求；attempt 表总数17还包含1次纯下载/准备步骤。所有失败和不完整输出均保留 attempt 诊断，不冒充完成报告。没有自动清空历史或修改用户密码。
+
+最后一次成功局部修订：provider约4.178秒，验证约3毫秒，保存约123毫秒；该次含领取等总历时约4.555秒。整个 task 跨两轮和多次人工诊断停顿，不能作为性能基线；不宣称比旧实现更快。typecheck/build 成功，未运行 test suite。

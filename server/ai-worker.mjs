@@ -1,3 +1,4 @@
+import {WORKER_CAPABILITIES} from "./ai-pipeline.mjs";
 import {logProductionStatus} from "./production-status.mjs";
 import { pool } from "./db.mjs";
 import { runOne } from "./ai-worker-core.mjs";
@@ -7,12 +8,12 @@ const config = aiConfig();
 logProductionStatus('worker');
 // Startup readiness checks only; no unit is claimed and no model request is sent.
 try {
- const schema=await pool.query("SELECT 1 FROM schema_migrations WHERE version='004_product_review.sql'");
+ const schema=await pool.query("SELECT 1 FROM schema_migrations WHERE version='006_ai_engine_fingerprint.sql'");
  if(!schema.rowCount)throw new Error('migration_required');
  const identity=(await pool.query("SELECT current_database() db,current_schema() schema")).rows[0];
  const db=new URL(process.env.WORKER_DATABASE_URL||process.env.DATABASE_URL);
  console.log('AI worker：PostgreSQL 连接与迁移状态就绪');
- console.log('ai_worker_config '+JSON.stringify({pid:process.pid, environment:process.env.NODE_ENV||'development',databaseLocal:['127.0.0.1','localhost','[::1]'].includes(db.hostname),database:identity.db,schema:identity.schema,provider:config.provider,model:config.model,endpointHost:new URL(config.endpoint).hostname,jobScope:process.env.AI_WORKER_JOB_ID||null}));
+ console.log('ai_worker_config '+JSON.stringify({pid:process.pid, environment:process.env.NODE_ENV||'development',databaseLocal:['127.0.0.1','localhost','[::1]'].includes(db.hostname),database:identity.db,schema:identity.schema,provider:config.provider,model:config.model,endpointHost:new URL(config.endpoint).hostname,jobScope:process.env.AI_WORKER_JOB_ID||null,capabilities:WORKER_CAPABILITIES}));
 } catch {
  await pool.end();throw new Error('AI worker 数据库未就绪，请检查生产直连地址与迁移');
 }
@@ -47,7 +48,7 @@ async function loop() {
         code: error.code ?? error.cause?.code ?? "unknown",
         reason:
           error.message === "migration_required"
-            ? "missing 004_product_review.sql migration"
+            ? "missing 006_ai_engine_fingerprint.sql migration"
             : "connection or query failed",
       });
       await pool.end();

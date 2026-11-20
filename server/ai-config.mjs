@@ -1,3 +1,4 @@
+import {AI_ENGINE_VERSION} from './ai-engine-version.mjs';
 import { createHash } from "node:crypto";
 export const digest = (value) =>
   createHash("sha256")
@@ -12,7 +13,7 @@ export const numberEnv = (name, fallback, min = 1, max = 1000000) =>
     min,
     Math.min(max, Math.floor(Number(process.env[name]) || fallback)),
   );
-export const PROMPT_VERSION = "ddv-product-review-5";
+export const PROMPT_VERSION = "ddv-product-review-14";
 export function aiConfig() {
   const provider = process.env.AI_PROVIDER || "qwen";
   const model = process.env.AI_MODEL || "qwen3.7-flash";
@@ -55,6 +56,8 @@ export function aiConfig() {
     endpoint,
     promptVersion: PROMPT_VERSION,
     schemaVersion: 2,
+    pipelineVersion: "product-review-v2",
+    executorVersion: AI_ENGINE_VERSION,
     batchChars: numberEnv("AI_BATCH_CHARS", 9000, 1000, 16000),
     batchComments: numberEnv("AI_BATCH_COMMENTS", 20, 1, 100),
     outputTokens: numberEnv("AI_MAX_OUTPUT_TOKENS", 4096, 512, 8192),

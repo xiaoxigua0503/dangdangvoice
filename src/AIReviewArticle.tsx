@@ -11,9 +11,10 @@ export interface ProductReview {
 }
 const countLabels:Record<string,string>={comments:'快照评论',substantive:'非默认且至少十二字的评论',defaults:'默认评价',imageReferences:'图片地址',uniqueImages:'成功下载的去重图片',unreadImages:'未读图片条目'};
 export function AIReviewArticle({report,showEvidence}:{report:ProductReview;showEvidence:(kind:string,id:string)=>void}) {
- const [filter,setFilter]=useState('exactComments'),[page,setPage]=useState(1);
+ const [filter,setFilter]=useState('exactComments'),[page,setPage]=useState(1),[statsOpen,setStatsOpen]=useState(false);
+ const statKeys=[...new Set([report.verdict,...(report.paragraphs||[]),...(report.checks||[])].flatMap(p=>p?.statistics||[]))];
  function refs(items:Citation[]) {return <span className="ai-citations">{items.map((c,i)=><button key={c.kind+c.id+i} title={c.quote||c.visibleText||'打开原始证据'} aria-label={`查看${c.kind==='comment'?'评论':'图片'}证据 ${i+1}`} onClick={()=>showEvidence(c.kind,c.id)}>{c.kind==='comment'?'评':'图'}{i+1}</button>)}</span>}
- const p=(item:Paragraph,key:string)=><p key={key}>{item.text} {refs(item.citations)}{!!item.statistics?.length&&<small className="ai-statistics">{item.statistics.map(k=>`${countLabels[k]}：${report.scope?.[k as keyof NonNullable<ProductReview['scope']>] ?? '未统计'}`).join(' · ')}（本份快照）</small>}</p>;
+ const p=(item:Paragraph,key:string)=><p key={key}>{item.text} {refs(item.citations)}{!!item.statistics?.length&&<button className="ai-scope-reference" aria-label="查看本段统计口径" onClick={()=>setStatsOpen(true)}>范围</button>}</p>;
  const q=report.quality;
  const filters=q?[
   {key:'exactComments',label:'相同评论原文',kind:'comment',groups:q.exactComments},
@@ -29,10 +30,11 @@ export function AIReviewArticle({report,showEvidence}:{report:ProductReview;show
    {report.hasSynthesis&&report.verdict?<>
     <div className="ai-review-verdict">{p(report.verdict,'verdict')}</div>
     <div className="ai-review-prose">{report.paragraphs?.map((item,i)=>p(item,'p'+i))}</div>
-    {!!report.imageText?.length&&<div className="ai-review-photos"><h3>图文对照</h3>{report.imageText.map((item,i)=>p(item,'photo'+i))}</div>}
+    {!!report.imageText?.length&&<div className="ai-review-photos"><h3>图文对照</h3>{report.imageText.map((item,i)=><div className="ai-photo-observation" key={i}><small>{item.relation==='match'?'可见细节相呼应':item.relation==='conflict'?'可见细节存在差异':'对应关系未明'}</small>{p(item,'photo'+i)}</div>)}</div>}
     {!!report.checks?.length&&<aside className="ai-review-checks"><h3>下单前，值得确认</h3>{report.checks.map((item,i)=>p(item,'check'+i))}</aside>}
    </>:<p role="status">{report.empty?"本份快照没有可读评论，尚无材料生成商品综合解读。":"综合解读尚未通过校验。请展开处理详情查看原因；已读证据仍保留，可重试未完成步骤。"}</p>}
    {report.scope&&<footer className="ai-review-scope">本份快照：{report.scope.comments} 条评论，其中 {report.scope.substantive} 条非默认且至少十二字；{report.scope.uniqueImages} 张成功下载的去重图片。{report.scope.unreadImages>0&&`另有 ${report.scope.unreadImages} 个图片条目未读。`} {report.scope.siteTotal!=null&&`站点宣称评价量 ${report.scope.siteTotal}，不等于本次已读量。`}<br/>{report.strategy}。{report.stages&&report.stages>1?`共 ${report.stages} 个阅读阶段，综合步骤只使用已校验阶段证据。`:''}</footer>}
+   {!!statKeys.length&&<details className="ai-scope-detail" open={statsOpen} onToggle={e=>setStatsOpen(e.currentTarget.open)}><summary>查看统计口径</summary><p>以下全部为本份保存快照的程序统计；图片地址按 URL 计，成功下载的唯一图片按 SHA-256 计。站点宣称评价量不作为已读分母。</p><dl>{statKeys.map(k=><div key={k}><dt>{countLabels[k]}</dt><dd>{report.scope?.[k as keyof NonNullable<ProductReview['scope']>] ?? '未统计'}</dd></div>)}</dl></details>}
   </article>
   <details className="ai-review-quality"><summary>查看评论与图片质量</summary>
    <p>以下是辅助筛查线索，不证明刷单、虚假评价或任何欺诈。重复来源保留全部原件，不视为多个独立证据。</p>
