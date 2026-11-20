@@ -108,6 +108,7 @@ async function scopedFetch(jar, url, opts = {}) {
   if (cookie) headers.cookie = cookie;
   const res = await fetch(url, { headers, redirect: "follow", signal: AbortSignal.timeout(opts.timeout ?? 15_000) });
   absorbCookies(jar, res, host);
+  if (!res.ok) { await res.body?.cancel(); throw Object.assign(new Error('upstream_http_error'), {code:`upstream_http_${res.status}`}); }
   if (opts.bytes) return Buffer.from(await res.arrayBuffer());
   return await res.text();
 }
@@ -208,6 +209,16 @@ function parseProductMeta(bufOrText, pid) {
   let name = guil ? guil[1] : ttl.split(" - 当当")[0].replace(/[《》]/g, "").trim();
   if (/商品不存在|404|页面不存在|暂时没有找到|抱歉|验证|欢迎光临/.test(name)) name = null;
   out.name = name || null;
+  if(!out.name) return out;
+  const $=load(html);
+  out.description=$('meta[name="description"]').attr('content')?.trim() || null;
+  const specifications={};
+  // Only data actually present on the requested product page. No inferred fields.
+  $('#detail_describe li, .key li').each((_,el)=>{
+    const raw=$(el).text().trim(), colon=raw.search(/[:：]/);
+    if(colon>0 && raw.length<=1000) specifications[raw.slice(0,colon).trim()]=raw.slice(colon+1).trim();
+  });
+  if(Object.keys(specifications).length)out.specifications=specifications;
   return out;
 }
 
@@ -651,6 +662,13 @@ function rateOk(ip) {
 
 const lastEgress = { list: "unknown", detail: "unknown", at: 0 };
 const note = (ep, ok) => { lastEgress[ep] = ok ? "clear" : "waf"; lastEgress.at = Date.now(); };
+function relayFailure(error, action, pid) {
+  const cause = error?.cause?.code || error?.code;
+  const code = /^upstream_http_\d{3}$/.test(cause || '') ? cause
+    : error?.name === 'TimeoutError' || /TIMEOUT/.test(cause || '') ? 'upstream_timeout' : 'upstream_network_error';
+  console.warn('relay_failure '+JSON.stringify({action,pid,code,networkCode:/^[A-Z0-9_]{1,60}$/.test(cause||'')?cause:undefined}));
+  return code;
+}
 
 async function handleApi(url, req, res) {
   const path = url.pathname;
@@ -674,15 +692,15 @@ async function handleApi(url, req, res) {
     if (action === "prime") {
       const pid = extractPid(body.url || body.pid);
       if (!pid) return json(res, 422, { error: "no_product_id" });
-      let blocked = false, meta = {};
+      let blocked = false, meta = {}, code;
       try { await scopedFetch(jar, "https://www.dangdang.com/", {}); } catch { blocked = true; }
       try {
         const htmlBuf = await scopedFetch(jar, `https://product.dangdang.com/${pid}.html`,
           { referer: "https://www.dangdang.com/", bytes: true, timeout: 18_000 });
         meta = parseProductMeta(htmlBuf, pid);
         blocked = !meta.name;
-      } catch { blocked = true; }
-      return json(res, 200, { ok: true, action, blocked, meta, pid, cookies: jarToList(jar) });
+      } catch (e) { blocked = true; code = relayFailure(e, action, pid); }
+      return json(res, 200, { ok: true, action, blocked, code, meta, pid, cookies: jarToList(jar) });
     }
 
     if (action === "list") {
@@ -701,7 +719,7 @@ async function handleApi(url, req, res) {
         note("list", true);
         return json(res, 200, { ok: true, action, blocked: false, summary, items, cookies: jarToList(jar) });
       } catch (e) {
-        return json(res, 200, { ok: false, action, blocked: true, err: String(e?.message || e).slice(0, 120), cookies: jarToList(jar) });
+        return json(res, 200, { ok: false, action, blocked: true, code: relayFailure(e, action, pid), cookies: jarToList(jar) });
       }
     }
 
@@ -714,7 +732,7 @@ async function handleApi(url, req, res) {
         note("detail", true);
         return json(res, 200, { ok: true, action, blocked: false, fields: parseDetailHtml(txt), cookies: jarToList(jar) });
       } catch (e) {
-        return json(res, 200, { ok: false, action, blocked: true, err: String(e?.message || e).slice(0, 120), cookies: jarToList(jar) });
+        return json(res, 200, { ok: false, action, blocked: true, code: relayFailure(e, action), cookies: jarToList(jar) });
       }
     }
 

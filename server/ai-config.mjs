@@ -12,7 +12,7 @@ export const numberEnv = (name, fallback, min = 1, max = 1000000) =>
     min,
     Math.min(max, Math.floor(Number(process.env[name]) || fallback)),
   );
-export const PROMPT_VERSION = "ddv-evidence-1";
+export const PROMPT_VERSION = "ddv-product-review-5";
 export function aiConfig() {
   const provider = process.env.AI_PROVIDER || "qwen";
   const model = process.env.AI_MODEL || "qwen3.7-flash";
@@ -45,12 +45,16 @@ export function aiConfig() {
     parsed.hash
   )
     throw new Error("AI_BASE_URL 必须是无凭据的 HTTPS 服务地址");
+  if (provider === 'qwen' && !parsed.pathname.replace(/\/$/,'').endsWith('/v1'))
+    throw new Error('AI_BASE_URL 必须是 Qwen 的兼容 API 根地址（以 /v1 结尾），不是网站地址');
+  if (process.env.APP_BASE_URL && parsed.origin === new URL(process.env.APP_BASE_URL).origin)
+    throw new Error('AI_BASE_URL 不能指向本应用，请配置 Qwen 模型 API 地址');
   return {
     provider,
     model,
     endpoint,
     promptVersion: PROMPT_VERSION,
-    schemaVersion: 1,
+    schemaVersion: 2,
     batchChars: numberEnv("AI_BATCH_CHARS", 9000, 1000, 16000),
     batchComments: numberEnv("AI_BATCH_COMMENTS", 20, 1, 100),
     outputTokens: numberEnv("AI_MAX_OUTPUT_TOKENS", 4096, 512, 8192),

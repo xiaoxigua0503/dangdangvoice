@@ -1,5 +1,7 @@
 # Free / Pro 与独立 AI 深度分析
 
+> 当前 Node/PostgreSQL 分支的新任务使用商品综合解读 v2。请求预算、schema、004 迁移、验证记录与 VM 更新步骤以[商品综合解读说明](./README-AI-REVIEW.md)为准；下方旧版分批发现说明用于理解历史报告。
+
 此扩展沿用现有邮箱登录、验证、HttpOnly 会话、CSRF、用户所属的 `saved_runs` / `saved_comments`。没有第二套账户/历史，没有支付功能。Free 保持完整的基础词典分析、采集、导入导出、本地档案、重试队列、云历史、评论库、声纹和晒图墙。Pro 添加独立的“AI 深度分析”视图，不把 AI 结论混入基础仪表盘。
 
 ## 迁移、启动与演示权限
@@ -112,3 +114,15 @@ AI 测试使用确定性 mock 与注入的图片下载器，验证真实 PNG 字
 前一阶段的历史验证结果（不代表本次修改已测试）：TypeScript、生产构建、11 项基础回归/发布包测试、4 项账户集成测试及 7 项 Pro/AI 集成测试全部通过。Pro/账户与独立发布包也在 Node 22.23.5 上验证，数据库为 Docker PostgreSQL 17.12，浏览器为本机 headless Chrome（1440px / 390px）。`npm audit --omit=dev` 为 0 个已知漏洞；原有开发工具链仍有上游 advisory，未声称整个开发依赖树无漏洞。本地开发库已应用 002，演示账户 `pro-demo@example.com` 已通过现有邮箱验证流程并由 admin 命令授 Pro。初始随机密码未保留；使用开发捕获的密码重置邮件设置登录密码。演示真实样例存在晒图地址缺失，mock 报告诚实标为 partial。没有真实 Qwen 推理或生产部署。
 
 本轮入口/后台改动按用户要求没有运行测试、浏览器检查或真实 AI 请求，仅构建发布包并执行本地迁移与账户引导。
+
+## AI 状态与历史排障（2026-11-18）
+
+- AI 下拉框默认展示当前账户的全部商品/快照，可切换为当前快照，数据库每页 20 个任务；每项标明商品、快照和任务编号。`GET /api/ai/jobs?page=1&runId=<optional UUID>` 始终按账户过滤，不提供跨账户访问。
+- 当前任务的轮询同步更新下拉框状态；创建、取消、重试后刷新状态。切换任务和卸载使旧响应失效。`/app?aiJob=<UUID>` 可在刷新后恢复报告，仍要求账户、邮箱、Pro 和任务 ownership。
+- 待处理、运行、等待重试、下次重试时间、过期租约和最近错误均由状态 API 返回；一分钟无新结果显示检查 worker 的提示，不能把 ready 等同于任务完成。
+- worker 日志含时间、task/unit ID、阶段和安全错误码；validation 仅记录字段路径/错误类型，不记录原始评论、输出正文或凭据。图片观察不能作为评论引文；输入提供合法证据 ID，并在有限重试时附上上次校验错误。不关闭证据/引文校验。
+- 本地 worker 默认从项目根读取 `.env`，已有 shell 环境优先。HTTP 用 `DATABASE_URL`，worker 优先 `WORKER_DATABASE_URL`；不要从 production shell 启动本地进程。启动日志可核对环境、数据库名、schema、API 主机和 enabled/key-ready 布尔值。`AI_BASE_URL` 是模型 API `/v1` 根地址，不能是应用网址。
+- `AI_WORKER_JOB_ID=<UUID>` 可将诊断 consumer 限于指定 task；它不会跳过 ownership/Pro/lease/并发条件。诊断结束取消该环境变量并重启正常 worker。生产部署前先核对 backlog，避免把全队列当作验证任务。
+
+- 当前生产 worker 在 iad1，避免已观测的 sin1/hkg1 到北京 API/CDN 的 TCP 超时。仍使用北京端点与原 model/key，不应通过关闭 TLS 检查解决网络问题。
+- quotes 元素必须是 {commentId,text} 对象；图像观察不当作评论引文。结构化 ID 与正文里提及的证据 ID 均经过校验。系统 prompt 哈希也纳入中间缓存 key；完成报告默认打开有发现的章节，避免空概览造成误解。

@@ -1,5 +1,15 @@
-import { SYSTEM_PROMPT } from "./ai-evidence.mjs";
+import {reviewPayload,REVIEW_PROMPT,budgetInput,reviewParts} from "./ai-review.mjs";
+import { SYSTEM_PROMPT, evidenceInstructions } from "./ai-evidence.mjs";
 export function requestBody(config, input, image) {
+  if(config.schemaVersion===2) {
+    const images=Array.isArray(image)?image:[];
+    const payload=reviewPayload(input);
+    const budget=budgetInput(config,payload,images);
+    if(!budget.fits)throw Object.assign(new Error('context_budget_exceeded'),{permanent:true});
+    const content=[{type:'text',text:JSON.stringify(payload)}];
+    for(const i of images)content.push({type:'text',text:JSON.stringify({imageId:i.id})},{type:'image_url',image_url:{url:`data:${i.mime};base64,${i.bytes.toString('base64')}`}});
+    return {model:config.model,messages:[{role:'system',content:REVIEW_PROMPT},{role:'user',content}],response_format:{type:'json_object'},enable_thinking:false,enable_search:false,max_tokens:config.outputTokens,stream:false};
+  }
   const content = [
     {
       type: "text",
@@ -7,6 +17,8 @@ export function requestBody(config, input, image) {
         product: input.product,
         parts: input.parts,
         imageId: input.imageId || null,
+        evidenceRules:evidenceInstructions(input,!!image,input.previousValidationError),
+        quoteItemSchema:{type:"object",required:["commentId","text"],additionalProperties:false,properties:{commentId:{type:"string",enum:[...new Set(input.parts.map(p=>p.commentId))]},text:{type:"string",description:"输入 part.text 的逐字连续子串"}}},
       }),
     },
   ];
@@ -23,6 +35,7 @@ export function requestBody(config, input, image) {
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content },
     ],
+    response_format: {type:"json_object"},
     enable_thinking: false,
     enable_search: false,
     max_tokens: config.outputTokens,
@@ -33,7 +46,11 @@ export async function infer(config, input, image, signal, fetcher = fetch) {
   if (config.provider === "mock") {
     if (process.env.NODE_ENV === "production") throw new Error("mock_disabled");
     return {
-      result: {
+      result: config.schemaVersion===2 ? (()=>{
+        const refs=[...new Set(reviewParts(input).map(p=>p.commentId))];
+        const p={text:'本地演示：这是流程占位内容，未执行真实模型推理，不能作为购买建议。',citations:refs.slice(0,1).map(id=>({kind:'comment',id,quote:null,visibleText:null})),statistics:[]};
+        return {schemaVersion:2,verdict:p,paragraphs:[p],imageText:[],checks:[],qualitySignals:[]};
+      })() : {
         findings: [
           {
             category: image ? "aspect" : "overview",
@@ -52,7 +69,8 @@ export async function infer(config, input, image, signal, fetcher = fetch) {
     };
   }
   if (!process.env.AI_API_KEY) throw new Error("provider_not_configured");
-  const r = await fetcher(
+  let r;
+  try { r = await fetcher(
     config.endpoint.replace(/\/$/, "") + "/chat/completions",
     {
       method: "POST",
@@ -65,15 +83,16 @@ export async function infer(config, input, image, signal, fetcher = fetch) {
       redirect: "error",
     },
   );
+  } catch (e) {
+    throw Object.assign(new Error(signal.aborted || ["AbortError", "TimeoutError"].includes(e.name) ? "provider_timeout" : "provider_network_error"), {cause:e});
+  }
   if (!r.ok) {
-    await r.body?.cancel();
-    throw new Error(
-      r.status === 429
-        ? "provider_rate_limit"
-        : r.status === 401 || r.status === 403
-          ? "provider_auth_failed"
-          : "provider_http_error",
-    );
+    // Read only a bounded error body; retain a known category, never provider text.
+    let raw=""; const reader=r.body?.getReader();
+    if(reader) { try { for(;;) { const {done,value}=await reader.read(); if(done)break; raw+=Buffer.from(value).toString("utf8"); if(raw.length>16384)break; } } finally { await reader.cancel().catch(()=>{}); } }
+    let code="";try{code=JSON.parse(raw).error?.code || "";}catch{}
+    const quota=/quota|arrear|insufficient|billing|allocation/i.test(code);
+    throw Object.assign(new Error(quota ? "provider_quota_exhausted" : r.status===429 ? "provider_rate_limit" : [401,403].includes(r.status) ? "provider_auth_failed" : "provider_http_"+r.status), {httpStatus:r.status, permanent:quota || (r.status>=400&&r.status<500&&![408,429].includes(r.status))});
   }
   const reader = r.body.getReader();
   let size = 0;

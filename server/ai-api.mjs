@@ -35,6 +35,16 @@ export async function aiAPI(req, res, url, readBody, json) {
       json(res, 200, { rows });
       return true;
     }
+    if(path === '/api/ai/jobs' && req.method === 'GET') {
+      const page=Math.max(1,Math.min(10000,Number(url.searchParams.get('page'))||1));
+      const run=url.searchParams.get('runId')||null;
+      if(run) await loadOwnedRun(user.id,z.string().uuid().parse(run));
+      const total=+(await pool.query('SELECT count(*) n FROM ai_jobs WHERE user_id=$1 AND ($2::uuid IS NULL OR run_id=$2)',[user.id,run])).rows[0].n;
+      const rows=(await pool.query(`SELECT j.id,j.run_id,j.state,j.created_at,j.config->>'model' model,r.product->>'pid' pid,r.product->>'name' name
+        FROM ai_jobs j JOIN saved_runs r ON r.id=j.run_id AND r.user_id=j.user_id
+        WHERE j.user_id=$1 AND ($2::uuid IS NULL OR j.run_id=$2) ORDER BY j.created_at DESC,j.id LIMIT 20 OFFSET $3`,[user.id,run,(page-1)*20])).rows;
+      json(res,200,{rows,total,page});return true;
+    }
     if (path === "/api/ai/jobs" && req.method === "POST") {
       let b;
       try {
@@ -46,7 +56,9 @@ export async function aiAPI(req, res, url, readBody, json) {
         .object({ runId: z.string().uuid() })
         .strict()
         .parse(b);
-      json(res, 200, await createJob(user.id, runId));
+      const created=await createJob(user.id, runId);
+      console.log("ai_job "+JSON.stringify({at:new Date().toISOString(),event:"created_or_restored",job:created.id,run:runId,reused:created.reused}));
+      json(res, 200, created);
       return true;
     }
     match = path.match(
@@ -64,6 +76,16 @@ export async function aiAPI(req, res, url, readBody, json) {
     if (!job) fail(404, "AI 任务不存在");
     if (!action && req.method === "GET") {
       const counts = await coverage(id);
+      const progress = (await pool.query(`SELECT
+        count(*) FILTER(WHERE state='pending')::int pending,
+        count(*) FILTER(WHERE state='running')::int running,
+        count(*) FILTER(WHERE state='pending' AND attempts>0)::int retrying,
+        count(*) FILTER(WHERE state='running' AND lease_until<now())::int expired,
+        min(next_at) FILTER(WHERE state='pending' AND next_at>now()) AS next_retry_at,
+        (SELECT max(coalesce(ended_at,started_at)) FROM ai_attempts WHERE unit_id IN (SELECT id FROM ai_units WHERE job_id=$1)) AS last_activity_at
+        FROM ai_units WHERE job_id=$1`,[id])).rows[0];
+      progress.stage=(await pool.query("SELECT kind FROM ai_units WHERE job_id=$1 AND state IN ('pending','running') ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END,id LIMIT 1",[id])).rows[0]?.kind || null;
+      const latestError=(await pool.query("SELECT a.error FROM ai_attempts a JOIN ai_units u ON u.id=a.unit_id WHERE u.job_id=$1 AND a.error IS NOT NULL ORDER BY a.started_at DESC LIMIT 1",[id])).rows[0]?.error || null;
       const failures = (
         await pool.query(
           "SELECT id,kind,input->>'imageId' image_id,ARRAY(SELECT DISTINCT p->>'commentId' FROM jsonb_array_elements(input->'parts') p) comment_ids,error FROM ai_units WHERE job_id=$1 AND state IN ('failed','cancelled') ORDER BY id LIMIT 100",
@@ -99,16 +121,11 @@ export async function aiAPI(req, res, url, readBody, json) {
         promptVersion: job.config.promptVersion,
         mock: job.config.provider === "mock",
         coverage: counts,
+        progress: {...progress, latestError},
         product: job.product,
         createdAt: job.created_at,
         updatedAt: job.updated_at,
-        report: job.report
-          ? {
-              generatedAt: job.report.generatedAt,
-              partial: job.report.partial,
-              method: job.report.method,
-            }
-          : null,
+        report: job.report,
         categories,
         failures,
         errorsTotal,
@@ -243,17 +260,22 @@ export async function aiAPI(req, res, url, readBody, json) {
           ).rows[0].n;
           if (active >= numberEnv("AI_USER_MAX_ACTIVE_JOBS", 2))
             fail(429, "当前账户并行任务已满");
+          const reread = job.config.schemaVersion===2 && (await c.query("SELECT 1 FROM ai_units WHERE job_id=$1 AND kind='review' AND state IN ('failed','cancelled') LIMIT 1",[id])).rowCount>0;
           const r = await c.query(
             "UPDATE ai_units SET state='pending',attempts=0,error=NULL,next_at=now(),lease_token=NULL,lease_until=NULL WHERE job_id=$1 AND state IN ('failed','cancelled') RETURNING id",
             [id],
           );
           if (!r.rowCount) fail(409, "没有需要重试的失败项");
+          // Successful synthesis of an earlier partial read cannot survive a
+          // reread. Keep its attempt history; rebuild its input after reads end.
+          if(reread) await c.query("UPDATE ai_units SET state='failed',result=NULL,error='stale_synthesis',attempts=0 WHERE job_id=$1 AND kind='synthesis'",[id]);
           await c.query(
             "UPDATE ai_jobs SET state=CASE WHEN state IN ('queued','running') THEN state ELSE 'queued' END,report=NULL,revision=revision+1,updated_at=now() WHERE id=$1",
             [id],
           );
         }
       });
+      console.log("ai_job "+JSON.stringify({at:new Date().toISOString(),event:action,job:id}));
       json(res, 200, { ok: true });
       return true;
     }

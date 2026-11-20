@@ -39,6 +39,8 @@ export async function validateImage(bytes, config) {
   } catch {
     throw new ImageError("invalid_image_content");
   }
+  if (dimensions.width<=10 || dimensions.height<=10 || Math.max(dimensions.width,dimensions.height)/Math.min(dimensions.width,dimensions.height)>200)
+    throw new ImageError("invalid_image_content");
   if (
     !dimensions.width ||
     !dimensions.height ||
@@ -90,7 +92,7 @@ export async function downloadImage(raw, config, signal, redirects = 0) {
           res.resume();
           return reject(
             new ImageError(
-              res.statusCode === 404 ? "image_not_found" : "image_unavailable",
+              res.statusCode === 404 ? "image_not_found" : "image_http_"+res.statusCode,
             ),
           );
         }
@@ -112,8 +114,9 @@ export async function downloadImage(raw, config, signal, redirects = 0) {
         res.on("end", () => resolve(Buffer.concat(chunks)));
       },
     );
-    req.on("error", () =>
-      reject(new Error(signal.aborted ? "aborted" : "image_download_error")),
+    req.setTimeout(20000, () => req.destroy(new Error("image_timeout")));
+    req.on("error", (e) =>
+      reject(Object.assign(new Error(signal.aborted ? "aborted" : e.message === "image_timeout" ? "image_timeout" : "image_download_error"), {cause:e})),
     );
   });
   if (bytes.redirect)

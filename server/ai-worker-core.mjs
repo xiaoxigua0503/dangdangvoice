@@ -1,11 +1,17 @@
+import {prepareReview,reviewImages} from './ai-review-prepare.mjs';
+import {validateReview,REVIEW_PROMPT,reviewParts} from './ai-review.mjs';
+import {insertReviewUnits} from './ai-review-jobs.mjs';
 import { randomUUID } from "node:crypto";
 import { pool } from "./db.mjs";
 import { digest } from "./ai-config.mjs";
 import { infer, usageFrom } from "./ai-provider.mjs";
 import { downloadImage } from "./ai-images.mjs";
-import { validateResult } from "./ai-evidence.mjs";
+import { validateResult, SYSTEM_PROMPT } from "./ai-evidence.mjs";
 import { finalize } from "./ai-jobs.mjs";
 const safeErrors = new Set([
+  "unsupported_evidence_claim",
+  "model_limits_unverified",
+  "context_budget_exceeded",
   "invalid_structure",
   "invalid_reference",
   "missing_evidence",
@@ -32,6 +38,11 @@ const safeErrors = new Set([
   "image_download_error",
   "total_image_budget",
 ]);
+function networkErrors(e,depth=0) {
+  if(!e||depth>3)return undefined;
+  const code=typeof e.code==='string'&&/^[A-Z0-9_]{1,70}$/.test(e.code)?e.code:undefined;
+  return {name:['Error','TypeError','AggregateError','AbortError','TimeoutError'].includes(e.name)?e.name:undefined,code,cause:networkErrors(e.cause,depth+1),errors:Array.isArray(e.errors)?e.errors.slice(0,6).map(x=>networkErrors(x,depth+1)):undefined};
+}
 async function tryLock(c, key) {
   return (
     await c.query("SELECT pg_try_advisory_lock(hashtextextended($1,0)) ok", [
@@ -57,8 +68,8 @@ export async function claim(c, provider = process.env.AI_PROVIDER || "qwen") {
   try {
     const candidates = (
       await c.query(
-        `SELECT w.*,j.user_id,j.config,j.config_hash FROM ai_units w JOIN ai_jobs j ON j.id=w.job_id JOIN users a ON a.id=j.user_id WHERE a.plan='pro' AND a.disabled_at IS NULL AND (a.pro_expires_at IS NULL OR a.pro_expires_at>now()) AND a.verified_at IS NOT NULL AND j.config->>'provider'=$2 AND j.state IN ('queued','running') AND ((w.state='pending' AND w.next_at<=now()) OR (w.state='running' AND w.lease_until<now())) AND (w.state='running' OR (SELECT count(*) FROM ai_units active JOIN ai_jobs ownerjob ON ownerjob.id=active.job_id WHERE ownerjob.user_id=j.user_id AND active.state='running' AND active.lease_until>now())<$1) ORDER BY w.next_at,w.id FOR UPDATE OF w SKIP LOCKED LIMIT 32`,
-        [runtime.user_concurrency, provider],
+        `SELECT w.*,j.user_id,j.config,j.config_hash FROM ai_units w JOIN ai_jobs j ON j.id=w.job_id JOIN users a ON a.id=j.user_id WHERE ($3::uuid IS NULL OR j.id=$3::uuid) AND a.plan='pro' AND a.disabled_at IS NULL AND (a.pro_expires_at IS NULL OR a.pro_expires_at>now()) AND a.verified_at IS NOT NULL AND j.config->>'provider'=$2 AND j.state IN ('queued','running') AND ((w.state='pending' AND w.next_at<=now()) OR (w.state='running' AND w.lease_until<now())) AND (w.state='running' OR (SELECT count(*) FROM ai_units active JOIN ai_jobs ownerjob ON ownerjob.id=active.job_id WHERE ownerjob.user_id=j.user_id AND active.state='running' AND active.lease_until>now())<$1) ORDER BY w.next_at,w.id FOR UPDATE OF w SKIP LOCKED LIMIT 32`,
+        [runtime.user_concurrency, provider, process.env.AI_WORKER_JOB_ID || null],
       )
     ).rows;
     for (const unit of candidates) {
@@ -173,7 +184,10 @@ export async function runOne({
   let unit,
     heartbeat,
     usage = {},
-    cacheHit = false;
+    cacheHit = false, stage = "claim";
+  const phaseMs={};let phaseAt=Date.now();
+  const markStage=name=>{phaseMs[stage]=(phaseMs[stage]||0)+Date.now()-phaseAt;phaseAt=Date.now();stage=name;};
+  const log = (event, extra = {}) => console.log("ai_unit " + JSON.stringify({at:new Date().toISOString(),event, job:unit?.job_id, unit:unit?.id, kind:unit?.kind, stage, ...extra}));
   const control = new AbortController();
   const abort = () => control.abort();
   signal.addEventListener("abort", abort, { once: true });
@@ -184,6 +198,7 @@ export async function runOne({
     unit = await claim(c);
     if (!unit) return false;
     if (unit.exhausted) return true;
+    log("claimed", {attempt:unit.attempts+1});
     heartbeat = setInterval(() => {
       void c
         .query(
@@ -199,16 +214,21 @@ export async function runOne({
       control.signal,
       AbortSignal.timeout(unit.config.timeoutMs + 20000),
     ]);
-    const image =
+    markStage("image_download");
+    const v2=unit.config.schemaVersion===2;
+    const image = unit.kind==="synthesis" ? [] : v2 && unit.kind!=="prepare" ? await reviewImages(c,unit) :
       unit.kind === "image"
         ? await imageFor(c, unit, downloadFn, workSignal)
         : null;
+    markStage("cache");
     const cacheKey = digest({
       config: unit.config_hash,
+      prompt: digest(v2?REVIEW_PROMPT:SYSTEM_PROMPT),
       kind: unit.kind,
+      input: unit.input,
       parts: unit.input.parts,
       product: unit.input.product,
-      image: image?.hash || null,
+      image: Array.isArray(image)?image.map(i=>i.hash):image?.hash || null,
     });
     await c.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [
       "cache:" + unit.job_id + ":" + cacheKey,
@@ -220,26 +240,36 @@ export async function runOne({
       )
     ).rows[0];
     let result;
-    if (cached) {
+    if(unit.kind==="prepare") {
+      markStage("image_download_and_plan");result=await prepareReview(unit,downloadFn,workSignal);
+    } else if (cached) {
       cacheHit = true;
-      const remapped = {
+      const remapped = v2 ? cached.result : {
         findings: cached.result.findings.map((f) => ({
           ...f,
           images: f.images.length ? [unit.input.imageId] : [],
         })),
       };
-      result = validateResult(remapped, unit.input);
+      result = v2?validateReview(remapped,{...unit.input,parts:reviewParts(unit.input)}):validateResult(remapped, unit.input);
     } else {
+      markStage("provider");
+      log("provider_started", {model:unit.config.model, image:!!image});
       const response = await inferFn(
         unit.config,
-        unit.input,
+        {...unit.input,previousValidationError:["invalid_reference","invented_quote","invalid_structure","missing_evidence","unsupported_statistics","unsupported_evidence_claim","definitive_authenticity_claim"].includes(unit.error)?unit.error:undefined},
         image,
         workSignal,
       );
       usage = response.usage || {};
-      result = validateResult(response.result, unit.input);
+      markStage("validation");
+      try {result = v2?validateReview(response.result,{...unit.input,parts:reviewParts(unit.input)}):validateResult(response.result, unit.input);} catch(e) {
+        log("validation_rejected",{code:e.message,issues:e.validationIssues,allowedComments:[...new Set(unit.input.parts.map(p=>p.commentId))],imageId:unit.input.imageId||null,findings:Array.isArray(response.result?.findings)?response.result.findings.length:null});
+        throw e;
+      }
     }
     if (control.signal.aborted) throw new Error("aborted");
+    markStage("persist");
+    usage={...usage,phaseMs};
     await c.query("BEGIN");
     const owned = (
       await c.query(
@@ -253,6 +283,7 @@ export async function runOne({
       [unit.id, unit.leaseToken, result],
     );
     if (committed.rowCount) {
+      if(unit.kind==="prepare") await insertReviewUnits(c,unit.job_id,result.chunks);
       await c.query(
         "INSERT INTO ai_cache(user_id,job_id,key,result,usage) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
         [unit.user_id, unit.job_id, cacheKey, result, usage],
@@ -264,12 +295,14 @@ export async function runOne({
       await finalize(c, unit.job_id);
     }
     await c.query("COMMIT");
+    markStage("complete");
+    log("completed", {cached:cacheHit,phaseMs});
     return true;
   } catch (e) {
     await c.query("ROLLBACK").catch(() => {});
     if (!unit?.id) throw e;
     if (e.providerUsage) usage = usageFrom(e.providerUsage);
-    const code = safeErrors.has(e.message)
+    const code = safeErrors.has(e.message) || /^(?:provider_http_\d{3}|provider_timeout|provider_network_error|provider_quota_exhausted|image_http_\d{3}|image_timeout)$/.test(e.message)
       ? e.message
       : control.signal.aborted
         ? "interrupted"
@@ -277,9 +310,11 @@ export async function runOne({
             ["AbortError", "TimeoutError"].includes(e.name)
           ? "request_timeout"
           : "worker_error";
+    markStage("failed");usage={...usage,phaseMs};
+    log("failed", {code, phaseMs, httpStatus:e.httpStatus, network:networkErrors(e)});
     const permanent =
       e.permanent ||
-      ["provider_auth_failed", "provider_not_configured"].includes(code);
+      ["provider_auth_failed", "provider_not_configured", "model_limits_unverified", "context_budget_exceeded"].includes(code);
     await c.query("BEGIN");
     try {
       const live = (

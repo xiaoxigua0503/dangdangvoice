@@ -43,6 +43,8 @@ export interface Analysis {
 }
 export interface Product {
   pid: string; name: string | null; price?: string | null; image?: string | null;
+  description?: string | null; specifications?: Record<string,string>;
+  variants?: unknown; publisher?: string | null; author?: string | null; isbn?: string | null;
   url?: string; source: string; analysis: Analysis;
   comments_count: number; collected_at: number;
   site?: { total_comment_num?: string | number | null; pageCount?: string | number | null } & Record<string, unknown>;
@@ -55,11 +57,11 @@ export interface JobState {
 }
 export interface CookieItem { s: string; n: string; v: string }
 export interface RelayResp {
-  ok: boolean; action: string; blocked: boolean;
+  ok: boolean; action: string; blocked: boolean; code?: string;
   summary?: Record<string, string | number>;
   items?: CommentRow[];
   fields?: Partial<CommentRow> & { product_name?: string | null; price?: string | null; image?: string | null };
-  meta?: { name?: string | null; blocked?: boolean };
+  meta?: { name?: string | null; description?: string | null; specifications?: Record<string,string>; blocked?: boolean };
   pid?: string; cookies?: CookieItem[]; err?: string;
 }
 
@@ -91,7 +93,7 @@ export async function api<T = unknown>(path: string, opts?: RequestInit): Promis
     try { d = await r.json(); } catch { /* ignore */ }
     if (r.status===401 && d.error!=="pass_required") window.dispatchEvent(new Event("ddv-auth-expired"));
     if (d.error === "pass_required") throw new PassRequired();
-    throw new Error(d.msg || d.error || r.statusText);
+    throw Object.assign(new Error(d.msg || d.error || r.statusText),{status:r.status});
   }
   return r.json() as Promise<T>;
 }
@@ -176,11 +178,12 @@ export function csvRowsToComments(text: string): { rows: CommentInput[]; name: s
   return { rows: out, name, pid };
 }
 
-export function payloadFromJson(text: string): { rows: CommentInput[]; pid: string | null; name: string | null; price: string | null; image: string | null; url: string | null } {
+export function payloadFromJson(text: string): { rows: CommentInput[]; pid: string | null; name: string | null; price: string | null; image: string | null; url: string | null; metadata: Pick<Product,"description"|"specifications"|"site"|"variants"|"publisher"|"author"|"isbn"> } {
   const o = JSON.parse(text);
   const list: CommentInput[] = Array.isArray(o) ? o : (o.comments || o.items || []);
   let pid: string | null = o?.product?.pid || list.find((r: CommentInput) => r.pid)?.pid || null;
   return {
+    metadata: {description:o?.product?.description, specifications:o?.product?.specifications,site:o?.product?.site,variants:o?.product?.variants,publisher:o?.product?.publisher,author:o?.product?.author,isbn:o?.product?.isbn},
     rows: list.map((r: CommentInput) => ({ ...r })),
     pid: String(pid || "") || null,
     name: o?.product?.name || null, price: o?.product?.price || null,

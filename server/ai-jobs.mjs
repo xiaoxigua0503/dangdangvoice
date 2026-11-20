@@ -1,3 +1,4 @@
+import { modelBudget } from "./ai-review.mjs";
 import { effectivePro } from "./accounts.mjs";
 import { randomUUID } from "node:crypto";
 import { pool, transaction } from "./db.mjs";
@@ -34,6 +35,9 @@ export function makePlan(rows, product, config) {
     const data = {
       text: typeof row.text === "string" ? row.text : "",
       text_full: typeof row.text_full === "string" ? row.text_full : "",
+      score: Number.isFinite(row.score) ? row.score : null,
+      is_auto: Boolean(row.is_auto),
+      source: row.source ?? product.source ?? null,
       variant: row.variant ?? null,
       date: row.date ?? null,
       detail_url: row.detail_url ?? null,
@@ -61,6 +65,7 @@ export function makePlan(rows, product, config) {
       )
         parts.push({
           commentId: id,
+          score: data.score, date: data.date, variant: data.variant, is_auto: data.is_auto, source: data.source,
           part: part++,
           field,
           text: chars
@@ -77,7 +82,8 @@ export function makePlan(rows, product, config) {
           : "invalid:" + id + ":" + photoIndex,
     );
     if (!urls.length && row.has_img) urls.push("missing:" + id);
-    for (let url of urls) {
+    for (const [photoIndex,originalUrl] of urls.entries()) {
+      let url=originalUrl;
       try {
         const u = new URL(url);
         u.hash = "";
@@ -90,38 +96,15 @@ export function makePlan(rows, product, config) {
         imageMap.set(url, {
           id: "I" + digest(url).slice(0, 24),
           url,
-          comments: [],
+          comments: [], occurrences:[],
         });
       const img = imageMap.get(url);
+      img.occurrences.push({commentId:id,photoIndex,originalUrl});
       if (img.comments.at(-1) !== id) img.comments.push(id);
     }
   }
   const images = [...imageMap.values()];
-  const units = [];
-  for (const batch of batchParts(parts, config))
-    units.push({
-      kind: "text",
-      input: { parts: batch, product: product.name || product.pid },
-    });
-  const byComment = new Map();
-  for (const part of parts) {
-    if (!byComment.has(part.commentId)) byComment.set(part.commentId, []);
-    byComment.get(part.commentId).push(part);
-  }
-  for (const image of images.length > numberEnv("AI_MAX_IMAGES", 200)
-    ? []
-    : images) {
-    const contexts = image.comments.flatMap((id) => byComment.get(id) || []);
-    for (const batch of batchParts(contexts, config))
-      units.push({
-        kind: "image",
-        input: {
-          imageId: image.id,
-          parts: batch,
-          product: product.name || product.pid,
-        },
-      });
-  }
+  const units = parts.length ? [{kind:'prepare', input:{parts, product, images:images.map(i=>({id:i.id,comments:i.comments,occurrences:i.occurrences})), comments}}] : [];
   return { comments, images, units };
 }
 export async function loadOwnedRun(userId, runId, c = pool) {
@@ -141,12 +124,10 @@ export async function loadOwnedRun(userId, runId, c = pool) {
   // Minimize the AI snapshot and never send reviewer account names or levels.
   const p = run.product;
   const product = {
-    pid: p.pid,
-    name: p.name,
-    source: p.source,
-    collected_at: p.collected_at,
-    note_sample: p.analysis?.note_sample || null,
-    note_partial: p.analysis?.note_partial || null,
+    pid: p.pid, name:p.name, source:p.source, collected_at:p.collected_at,
+    sellerMetadata: Object.fromEntries(['description','price','specifications','variants','publisher','author','isbn'].filter(k=>p[k]!=null).map(k=>[k,p[k]])),
+    site: (()=>{const site=p.site||p.analysis?.site||{};return Object.fromEntries(['total_comment_num','pageCount','average_score'].filter(k=>site[k]!=null).map(k=>[k,site[k]]));})(),
+    note_sample:p.analysis?.note_sample || null, note_partial:p.analysis?.note_partial || null,
   };
   return { rows, product };
 }
@@ -169,6 +150,7 @@ export async function preview(userId, runId) {
     maxOutputTokens: config.outputTokens,
   };
   const blocked =
+    !modelBudget(config) ||
     rows.length > limits.comments ||
     plan.images.length > limits.images ||
     plan.units.length > limits.units;
@@ -186,8 +168,10 @@ export async function preview(userId, runId) {
       limits,
       jobLimits,
       maxRequests:
-        plan.units.length * jobLimits.attempts * (jobLimits.retryRounds + 1),
+        limits.units * jobLimits.attempts * (jobLimits.retryRounds + 1),
       blocked,
+      budget: modelBudget(config),
+      strategy: "下载并去重后，容量允许时一次图文合读；超限时分阶段阅读，再写一篇综合解读。不会静默抽样。",
       ready: providerReady(config),
       provider: config.provider,
       model: config.model,
@@ -196,7 +180,7 @@ export async function preview(userId, runId) {
         Boolean,
       ),
       notice:
-        "全量分析，不抽样。长评论分段、图片关联上下文分批发送；图片下载失败、格式不支持或超出体积限制将明确列为未覆盖。仅上传评论内容、商品名、图片和内部证据编号，不上传评论者账户名。",
+        "分析本份快照，不代表当当全部评价。传入已采集商品资料（商家声明）、评论全文、评分、日期、版本、默认评价标记及关联图片；不发送评论者账户名。未能读取的图片会明确列出。",
     },
   };
 }
@@ -292,7 +276,7 @@ export async function createJob(userId, runId) {
         [
           id,
           {
-            findings: [],
+            schemaVersion:2,hasSynthesis:false,empty:true,partial:false,findings: [],
             generatedAt: new Date().toISOString(),
             mock: config.provider === "mock",
           },
@@ -304,13 +288,13 @@ export async function createJob(userId, runId) {
 export async function coverage(id, c = pool) {
   const comments = (
     await c.query(
-      `SELECT count(*)::int total,count(*) FILTER(WHERE n>0 AND done=n)::int completed,count(*) FILTER(WHERE failed>0)::int failed FROM (SELECT a.id,count(u.id) n,count(u.id) FILTER(WHERE u.state='done') done,count(u.id) FILTER(WHERE u.state IN ('failed','cancelled')) failed FROM ai_comments a LEFT JOIN ai_unit_comments link ON link.job_id=a.job_id AND link.comment_id=a.id LEFT JOIN ai_units u ON u.id=link.unit_id AND u.kind='text' WHERE a.job_id=$1 GROUP BY a.id) q`,
+      `SELECT count(*)::int total,count(*) FILTER(WHERE n>0 AND done=n)::int completed,count(*) FILTER(WHERE failed>0)::int failed FROM (SELECT a.id,count(u.id) n,count(u.id) FILTER(WHERE u.state='done') done,count(u.id) FILTER(WHERE u.state IN ('failed','cancelled')) failed FROM ai_comments a LEFT JOIN ai_unit_comments link ON link.job_id=a.job_id AND link.comment_id=a.id LEFT JOIN ai_units u ON u.id=link.unit_id AND u.kind IN ('text','review') WHERE a.job_id=$1 GROUP BY a.id) q`,
       [id],
     )
   ).rows[0];
   const images = (
     await c.query(
-      `SELECT count(*)::int total,count(*) FILTER(WHERE done=n AND n>0)::int completed,count(*) FILTER(WHERE failed>0)::int failed FROM (SELECT coalesce(i.content_hash,i.url) key,count(u.id) n,count(u.id) FILTER(WHERE u.state='done') done,count(u.id) FILTER(WHERE u.state IN ('failed','cancelled')) failed FROM ai_images i LEFT JOIN ai_units u ON u.job_id=i.job_id AND u.kind='image' AND u.input->>'imageId'=i.id WHERE i.job_id=$1 AND i.url NOT LIKE 'missing:%' GROUP BY coalesce(i.content_hash,i.url)) q`,
+      `SELECT count(*)::int total,count(*) FILTER(WHERE done=n AND n>0)::int completed,count(*) FILTER(WHERE failed>0)::int failed FROM (SELECT coalesce(i.content_hash,i.url) key,count(u.id) n,count(u.id) FILTER(WHERE u.state='done') done,count(u.id) FILTER(WHERE u.state IN ('failed','cancelled')) failed FROM ai_images i LEFT JOIN ai_units u ON u.job_id=i.job_id AND ((u.kind='image' AND u.input->>'imageId'=i.id) OR (u.kind='review' AND EXISTS(SELECT 1 FROM jsonb_array_elements(u.input->'images') x WHERE x->>'id'=i.id OR (x->'aliases') ? i.id))) WHERE i.job_id=$1 AND i.url NOT LIKE 'missing:%' GROUP BY coalesce(i.content_hash,i.url)) q`,
       [id],
     )
   ).rows[0];
@@ -350,6 +334,7 @@ export async function finalize(c, id) {
     ).rowCount
   )
     return;
+  if(job.config.schemaVersion===2) { const {finalizeReview}=await import('./ai-review-jobs.mjs'); return finalizeReview(c,job); }
   const rows = (
     await c.query(
       "SELECT id,result FROM ai_units WHERE job_id=$1 AND state='done' ORDER BY id",
