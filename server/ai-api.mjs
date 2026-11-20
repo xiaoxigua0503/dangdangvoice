@@ -2,7 +2,7 @@ import { z } from "zod";
 import { pool, transaction } from "./db.mjs";
 import { requireUser, checkOrigin, effectivePro } from "./accounts.mjs";
 import { preview, createJob, coverage, loadOwnedRun } from "./ai-jobs.mjs";
-import { numberEnv } from "./ai-config.mjs";
+import { aiConfig, numberEnv } from "./ai-config.mjs";
 const fail = (status, msg) => {
   throw Object.assign(new Error(msg), { status });
 };
@@ -40,7 +40,7 @@ export async function aiAPI(req, res, url, readBody, json) {
       const run=url.searchParams.get('runId')||null;
       if(run) await loadOwnedRun(user.id,z.string().uuid().parse(run));
       const total=+(await pool.query('SELECT count(*) n FROM ai_jobs WHERE user_id=$1 AND ($2::uuid IS NULL OR run_id=$2)',[user.id,run])).rows[0].n;
-      const rows=(await pool.query(`SELECT j.id,j.run_id,j.state,j.created_at,j.config->>'model' model,r.product->>'pid' pid,r.product->>'name' name
+      const rows=(await pool.query(`SELECT j.id,j.run_id,CASE WHEN j.state='completed' AND j.report->>'hasSynthesis'='false' AND NOT coalesce((j.report->>'empty')::boolean,false) THEN 'failed' ELSE j.state END state,j.created_at,j.config->>'model' model,r.product->>'pid' pid,r.product->>'name' name
         FROM ai_jobs j JOIN saved_runs r ON r.id=j.run_id AND r.user_id=j.user_id
         WHERE j.user_id=$1 AND ($2::uuid IS NULL OR j.run_id=$2) ORDER BY j.created_at DESC,j.id LIMIT 20 OFFSET $3`,[user.id,run,(page-1)*20])).rows;
       json(res,200,{rows,total,page});return true;
@@ -69,11 +69,12 @@ export async function aiAPI(req, res, url, readBody, json) {
       action = match[2] || "";
     const job = (
       await pool.query(
-        "SELECT id,user_id,run_id,state,config,created_at,updated_at,product,revision,report - 'findings' AS report FROM ai_jobs WHERE id=$1 AND user_id=$2",
+        "SELECT id,user_id,run_id,state,config,created_at,updated_at,product,revision,provider_requests,report - 'findings' AS report FROM ai_jobs WHERE id=$1 AND user_id=$2",
         [id, user.id],
       )
     ).rows[0];
     if (!job) fail(404, "AI 任务不存在");
+    if(job.state==='completed'&&job.report?.hasSynthesis===false&&!job.report?.empty)job.state='failed';
     if (!action && req.method === "GET") {
       const counts = await coverage(id);
       const progress = (await pool.query(`SELECT
@@ -100,10 +101,11 @@ export async function aiAPI(req, res, url, readBody, json) {
       ).rows[0].n;
       const usage = (
         await pool.query(
-          "SELECT count(*)::int attempts,coalesce(sum((usage->>'prompt_tokens')::bigint),0)::text prompt_tokens,coalesce(sum((usage->>'completion_tokens')::bigint),0)::text completion_tokens,count(*) FILTER(WHERE cached)::int cache_hits FROM ai_attempts WHERE unit_id IN (SELECT id FROM ai_units WHERE job_id=$1)",
+          "SELECT count(*)::int attempts,count(*) FILTER(WHERE provider_request)::int provider_requests,coalesce(sum((usage->>'prompt_tokens')::bigint),0)::text prompt_tokens,coalesce(sum((usage->>'completion_tokens')::bigint),0)::text completion_tokens,count(*) FILTER(WHERE cached)::int cache_hits FROM ai_attempts WHERE unit_id IN (SELECT id FROM ai_units WHERE job_id=$1)",
           [id],
         )
       ).rows[0];
+      const delivered=(await pool.query("SELECT coalesce(max((a.usage->'delivered'->>'comments')::int),0)::int comments,coalesce(max((a.usage->'delivered'->>'images')::int),0)::int images FROM ai_attempts a JOIN ai_units u ON u.id=a.unit_id WHERE u.job_id=$1",[id])).rows[0];
       const categories = job.report
         ? (
             await pool.query(
@@ -116,11 +118,18 @@ export async function aiAPI(req, res, url, readBody, json) {
         id,
         runId: job.run_id,
         state: job.state,
-        model: job.config.model,
+        model: job.report?.actualModel||job.config.model,
         provider: job.config.provider,
         promptVersion: job.config.promptVersion,
         mock: job.config.provider === "mock",
         coverage: counts,
+        delivery: (await pool.query("SELECT count(*) FILTER(WHERE bytes IS NOT NULL)::int downloaded FROM ai_images WHERE job_id=$1",[id])).rows[0],
+        providerRequests: job.provider_requests,
+        providerRequestLimit: job.config.maxProviderRequests||3,
+        executorVersion: aiConfig().executorVersion,
+        pipelineVersion: job.config.pipelineVersion,
+        compatibleWorker: job.config.schemaVersion===4&&job.config.executorVersion===aiConfig().executorVersion,
+        delivered,
         progress: {...progress, latestError},
         product: job.product,
         createdAt: job.created_at,
@@ -162,6 +171,8 @@ export async function aiAPI(req, res, url, readBody, json) {
     if (action === "evidence" && req.method === "GET") {
       const cid = url.searchParams.get("comment"),
         iid = url.searchParams.get("image");
+      const mid=url.searchParams.get("metadata");
+      if(mid){const source=job.report?.sourceCatalog?.[mid];if(source?.kind!=="metadata")fail(404,"商家资料来源不存在");json(res,200,{metadata:source});return true;}
       if (cid) {
         const comment = (
           await pool.query(
@@ -239,7 +250,7 @@ export async function aiAPI(req, res, url, readBody, json) {
         ).rows[0];
         if (!row) fail(404, "AI 任务不存在");
         if (action === "cancel") {
-          if (row.state === "completed")
+          if (["completed","partial","failed"].includes(row.state))
             fail(409, "任务已结束，无需取消；已保存的报告保持可读");
           await c.query(
             "UPDATE ai_jobs SET state='cancelled',report=NULL,updated_at=now() WHERE id=$1",
@@ -260,7 +271,8 @@ export async function aiAPI(req, res, url, readBody, json) {
           ).rows[0].n;
           if (active >= numberEnv("AI_USER_MAX_ACTIVE_JOBS", 2))
             fail(429, "当前账户并行任务已满");
-          const reread = job.config.schemaVersion===2 && (await c.query("SELECT 1 FROM ai_units WHERE job_id=$1 AND kind='review' AND state IN ('failed','cancelled') LIMIT 1",[id])).rowCount>0;
+          if(job.provider_requests>=(job.config.maxProviderRequests||3))fail(409,"本任务请求预算已用尽，未重新调用模型");
+          const reread = job.config.schemaVersion>=2 && (await c.query("SELECT 1 FROM ai_units WHERE job_id=$1 AND kind='review' AND state IN ('failed','cancelled') LIMIT 1",[id])).rowCount>0;
           const r = await c.query(
             "UPDATE ai_units SET state='pending',attempts=0,error=NULL,next_at=now(),lease_token=NULL,lease_until=NULL WHERE job_id=$1 AND state IN ('failed','cancelled') RETURNING id",
             [id],
@@ -270,7 +282,7 @@ export async function aiAPI(req, res, url, readBody, json) {
           // reread. Keep its attempt history; rebuild its input after reads end.
           if(reread) await c.query("UPDATE ai_units SET state='failed',result=NULL,error='stale_synthesis',attempts=0 WHERE job_id=$1 AND kind='synthesis'",[id]);
           await c.query(
-            "UPDATE ai_jobs SET state=CASE WHEN state IN ('queued','running') THEN state ELSE 'queued' END,report=NULL,revision=revision+1,updated_at=now() WHERE id=$1",
+            "UPDATE ai_jobs SET state=CASE WHEN state IN ('queued','running') THEN state ELSE 'queued' END,report=NULL,revision=revision+1,model_cursor=0,updated_at=now() WHERE id=$1",
             [id],
           );
         }

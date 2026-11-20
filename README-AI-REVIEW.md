@@ -1,5 +1,8 @@
 # 商品综合解读 v2 · Node / PostgreSQL / VM
 
+> 历史 v2 设计与验证记录。当前待验证的单次图文综合 v4、简单 response、配置允许列表与增量迁移见 [Pro 运维](./README-PRO.md#当前待验证实现单次图文综合-v4)。本轮未运行验证。
+
+
 本次不部署。保留现有模型与 endpoint，不合并 QW Pages。HTTP 仅管理 durable jobs；独立常驻 worker 执行推理，继续使用 owner/Pro 检查、租约、心跳、取消、有界重试、私有缓存和中断续跑。
 
 ## 内容与数据

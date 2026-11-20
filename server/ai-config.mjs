@@ -1,3 +1,4 @@
+import {configuredModels,endpointUrl} from './ai-models.mjs';
 import {AI_ENGINE_VERSION} from './ai-engine-version.mjs';
 import { createHash } from "node:crypto";
 export const digest = (value) =>
@@ -13,7 +14,7 @@ export const numberEnv = (name, fallback, min = 1, max = 1000000) =>
     min,
     Math.min(max, Math.floor(Number(process.env[name]) || fallback)),
   );
-export const PROMPT_VERSION = "ddv-product-review-14";
+export const PROMPT_VERSION = "ddv-product-summary-16";
 export function aiConfig() {
   const provider = process.env.AI_PROVIDER || "qwen";
   const model = process.env.AI_MODEL || "qwen3.7-flash";
@@ -22,46 +23,24 @@ export function aiConfig() {
     !(provider === "mock" && process.env.NODE_ENV !== "production")
   )
     throw new Error("AI 提供方未受支持；生产不可使用 mock");
-  if (
-    provider === "qwen" &&
-    !/^qwen(?:3\.7-flash|3-vl-(?:plus|flash)|-vl-(?:plus|max))(?:-\d{4}-\d{2}-\d{2})?$/.test(
-      model,
-    )
-  )
-    throw new Error("请选择已支持的 Qwen 视觉模型，不能使用纯文本模型");
-  const endpoint =
-    process.env.AI_BASE_URL ||
-    "https://dashscope.aliyuncs.com/compatible-mode/v1";
-  let parsed;
-  try {
-    parsed = new URL(endpoint);
-  } catch {
-    throw new Error("AI_BASE_URL 无效，请使用 HTTPS 服务地址");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.username ||
-    parsed.password ||
-    parsed.search ||
-    parsed.hash
-  )
-    throw new Error("AI_BASE_URL 必须是无凭据的 HTTPS 服务地址");
-  if (provider === 'qwen' && !parsed.pathname.replace(/\/$/,'').endsWith('/v1'))
-    throw new Error('AI_BASE_URL 必须是 Qwen 的兼容 API 根地址（以 /v1 结尾），不是网站地址');
-  if (process.env.APP_BASE_URL && parsed.origin === new URL(process.env.APP_BASE_URL).origin)
-    throw new Error('AI_BASE_URL 不能指向本应用，请配置 Qwen 模型 API 地址');
+  const endpoint=endpointUrl(process.env.AI_BASE_URL||'https://dashscope.aliyuncs.com/compatible-mode/v1');
+  const models=configuredModels(model,endpoint);
+  const freeQuotaOnly=process.env.AI_FREE_QUOTA_ONLY==='true';
+  if(freeQuotaOnly&&!models[0].freeTierStopConfirmed)throw new Error('免费额度模式要求先在控制台为主模型开启用完即停并确认配置；代码不能查询剩余额度');
   return {
     provider,
-    model,
-    endpoint,
+    model:models[0].model,
+    endpoint:models[0].endpoint,
+    models,freeQuotaOnly,
+    modelCooldownMs:numberEnv("AI_MODEL_COOLDOWN_SECONDS",3600,60,86400)*1000,
+    maxRetryAfterMs:numberEnv("AI_MAX_RETRY_AFTER_SECONDS",120,1,600)*1000,
     promptVersion: PROMPT_VERSION,
-    schemaVersion: 2,
-    pipelineVersion: "product-review-v2",
+    schemaVersion: 4,
+    pipelineVersion: "product-summary-v4",
     executorVersion: AI_ENGINE_VERSION,
-    batchChars: numberEnv("AI_BATCH_CHARS", 9000, 1000, 16000),
-    batchComments: numberEnv("AI_BATCH_COMMENTS", 20, 1, 100),
     outputTokens: numberEnv("AI_MAX_OUTPUT_TOKENS", 4096, 512, 8192),
     timeoutMs: numberEnv("AI_REQUEST_TIMEOUT_MS", 120000, 1000, 180000),
+    maxProviderRequests: numberEnv("AI_MAX_PROVIDER_REQUESTS", 3, 1, 20),
     maxAttempts: numberEnv("AI_MAX_ATTEMPTS", 3, 1, 5),
     maxImageBytes: numberEnv(
       "AI_MAX_IMAGE_BYTES",
@@ -79,5 +58,5 @@ export function aiConfig() {
   };
 }
 export function providerReady(config) {
-  return config.provider === "mock" || !!process.env.AI_API_KEY;
+  return config.provider === "mock" || !!process.env[config.models?.[0]?.keyEnv||"AI_API_KEY"];
 }

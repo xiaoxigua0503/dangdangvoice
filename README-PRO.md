@@ -1,8 +1,115 @@
 # Free / Pro 与独立 AI 深度分析
 
-> 当前 Node/PostgreSQL 分支的新任务使用商品综合解读 v2。请求预算、schema、004 迁移、验证记录与 VM 更新步骤以[商品综合解读说明](./README-AI-REVIEW.md)为准；下方旧版分批发现说明用于理解历史报告。
+> 当前待验证实现为单次图文综合 v4，见下方“当前待验证实现”一节；保留 UI editorial。更早的 batch/repair/综合阶段说明与验证记录仅为历史，不代表本轮已执行验证。
 
 此扩展沿用现有邮箱登录、验证、HttpOnly 会话、CSRF、用户所属的 `saved_runs` / `saved_comments`。没有第二套账户/历史，没有支付功能。Free 保持完整的基础词典分析、采集、导入导出、本地档案、重试队列、云历史、评论库、声纹和晒图墙。Pro 添加独立的“AI 深度分析”视图，不把 AI 结论混入基础仪表盘。
+
+
+## 当前待验证实现：单次图文综合 v4
+
+本节取代下方历史版本的 batch、逐图、综合阶段和 repair 运行说明。
+本轮仅修改 source/配置示例/文档，**未执行测试、typecheck、build、浏览器自动化、真实 AI 请求、数据库迁移或服务重启**；不代表已运行成功。
+
+### 数据与输出
+
+新任务仍通过 Pro/owner 校验创建不可变快照，由持久 worker 领取。
+prepare 使用原有 SSRF、格式、像素及字节限制下载图片（并发 2），复用已保存字节。
+全部匿名评论（原文/全文、评分、日期、版本、默认标记）、白名单商品资料与评论—图片映射进入一个 JSON。
+去重图片以真正的 `image_url` base64 输入附在同一 chat-completions 请求中；URL/字节重复保留全部来源映射，不视作独立支持。
+商品资料与评论者体验分开；不传账户名、邮箱等身份字段。
+
+模型仅返回 `summary`、`considerations`、`sourceIds` 和可选 `headline`。
+只有 JSON/基本结构、非空文本、当前任务来源 ID 和资源边界检查；没有逐段 citation、原文抄写要求、句式正则判定或生成式 repair。
+schema/prompt/cache 已版本化。UI 直接呈现 summary，原文证据仍从 owner API 读取。
+质量诊断独立折叠，不作为文章接受条件。服务失败、截断、空输出或非法引用不会伪装成成功，也不会触发内容修复或因内容质量切换模型。
+
+容量以精确 HTTP JSON 字节数、官方图片数量/单图限制，以及 UTF-8 字节保守 token 上界和最大视觉 token 预检；字符数不是精确 token 数。上下文保守上界超限只表示无法确认可容纳（context_budget_unconfirmed），不声称 provider 一定会拒绝，也不自动拆分或抽样。
+若完整输入超限或限制未配置，停止在 prepare，保留全部原始数据，报告未处理评论/图片数量；不自动拆分、抽样或启动 synthesis。
+下载失败的图片保留具体条目；成功读取的全部去重图片与全部评论仍共同输入，报告标记缺失范围。
+
+### 配置主模型与候补
+
+未设置 `AI_MODELS_JSON` 时，继续使用现有 `AI_MODEL`、**原样配置区域/业务空间的** `AI_BASE_URL`、`AI_API_KEY`，没有隐式备用模型。
+不改 `.env`，不寻找其他 key，不自动改写到北京、workspace 或其他地域。
+
+`AI_MODELS_JSON` 是 server-only 有序允许列表：第一项为主模型，后续才是候补。
+每项必须明确 `model`、完整 `endpoint`、`vision:true`，`keyEnv` 默认 `AI_API_KEY`，只写变量名。
+仅支持兼容 OpenAI chat-completions 多模态和 JSON-object 输出的模型。
+不存在已核实内置容量的模型必须填写 limits；不能继承主模型的容量。
+以下全部尖括号均为待填写占位符，**不是有效模型、可运行配置或免费额度声明**：
+
+```json
+[
+  {
+    "model": "<复制当前 AI_MODEL>",
+    "endpoint": "<复制当前完整 AI_BASE_URL，不更换地域或 workspace>",
+    "keyEnv": "AI_API_KEY",
+    "vision": true,
+    "freeTierStopConfirmed": false
+  },
+  {
+    "model": "<运营者自行确认并允许的视觉模型 ID>",
+    "endpoint": "<该模型与其 key 对应的完整区域端点>",
+    "keyEnv": "AI_FALLBACK_KEY",
+    "vision": true,
+    "freeTierStopConfirmed": false,
+    "requestOptions": {},
+    "limits": {
+      "context": "<替换为官方正整数>",
+      "maxOutput": "<替换为官方正整数>",
+      "maxImages": "<替换为官方正整数>",
+      "imageTokens": "<替换为单图最大视觉 token 正整数>",
+      "requestBytes": "<替换为端点请求字节上限正整数>",
+      "dataUriBytes": "<替换为单图 data URI 字节上限正整数>",
+      "documentation": "<无凭据的官方 HTTPS 文档地址>"
+    }
+  }
+]
+```
+
+容量声明和 `vision:true` 是运营者配置，不是代码探测的结果。无 key、限制未知、不能容纳**同一份全部文本及图片**的候补会被跳过并记录原因；不会去掉图片以适配。
+`requestOptions` 仅允许布尔 `enable_thinking`、`enable_search`；Qwen 默认关闭两者，其他模型默认不发送这两个扩展参数。可填 `{}` 使用端点默认值。
+Cache 同时区分实际模型、精确端点、配置、请求选项、prompt、input 和图片哈希。每次领取还会与当前 server 允许列表求交集，已撤销的条目不再调用；旧任务不会继承允许列表中新加的模型或偷偷改用新端点。
+
+### 有限 fallback、退避与免费额度
+
+按 [Aliyun 错误码](https://help.aliyun.com/zh/model-studio/error-code/) 的具体 status + code 分类：
+
+| HTTP + provider code | 行为 |
+| --- | --- |
+| 403 `AllocationQuota.FreeTierOnly` | 该模型免费额度用尽，冷却并选择允许的候补 |
+| 400/403 `Arrearage` | provider 确认欠费/credit 问题，冷却并选择候补 |
+| 403 `Model.AccessDenied` | 对应模型无调用权限，冷却并选择候补 |
+| 404 `ModelNotFound` | 配置端点报告该模型不可用，冷却并选择候补；不推断具体下线原因 |
+| 429 `Throttling.RateQuota` / `Throttling.ResourceExhausted` / `Throttling.ServiceOverloaded` | 同模型有限退避，不 fallback |
+| 408、5xx、网络中断 | 同模型有限重试，不因这些错误换模型 |
+| 泛化的 403/429、`AccessDenied`、`insufficient_quota`、`Throttling.AllocationQuota` 或未知错误码 | 不猜测额度耗尽，不自动换模型；保留 status/code 并停止 |
+
+没有把任意 404/403 当作模型退役证明。新错误码须先按 provider 官方文档明确语义再加入精确映射。
+HTTP `Retry-After`（秒或日期）是最小等待时间；超过 `AI_MAX_RETRY_AFTER_SECONDS` 则停止自动重试，而不是截短等待后提前调用。
+不在 HTTP 中循环调用或等待：每次尝试是一个 durable worker attempt，通过 next_at 延后。
+`AI_MAX_PROVIDER_REQUESTS=3` 是每个 job 的总请求预留上限，覆盖 fallback、自动/手动重试和不确定网络结果；请求发出前事务预留，崩溃不返还。
+`AI_MAX_ATTEMPTS` 还限制单元尝试次数，两者先到者停止。手动重试不会重置总请求计数。
+`AI_MODEL_COOLDOWN_SECONDS=3600` 持久冷却相同 model/endpoint/keyEnv 配置，不轮转回已耗尽的条目；显式手动重试从列表头重新检查冷却。
+报告处理详情记录实际生成模型、端点 host、attempt、HTTP/code、fallback 原因与跳过原因；不存 key 值或 provider 原始错误文本。
+
+若只允许免费额度，先按 [用完即停说明](https://help.aliyun.com/zh/model-studio/new-free-quota/) 在 Aliyun 控制台对**每个**允许模型打开“用完即停”，再设置 `AI_FREE_QUOTA_ONLY=true`，逐项填写 `freeTierStopConfirmed:true`。
+单模型旧配置使用 `AI_FREE_TIER_STOP_CONFIRMED=true` 确认。
+未确认主模型会拒绝配置；未确认候补不参与调用。这只是运营者确认，代码不能打开控制台开关或精确查询剩余额度，不能保证候补还有免费额度。
+不支持该开关或没有免费额度的模型不能被当成 free-only 候补。
+
+### 增量迁移与历史
+
+本轮新增 `008_ai_model_fallback.sql`：只增加 `ai_jobs.model_cursor` 与持久 `ai_model_cooldowns`。
+需要先应用仍未部署的 `007_ai_article_outcomes.sql`（任务失败/部分状态和总请求计数）；迁移脚本按版本顺序执行，不改已应用 migration、不在请求内迁移。
+没有执行任何 migration。未来更新 VM 时先备份并按运维流程显式运行迁移，再让 web 与 worker 使用同一 release/fingerprint/数据库；本轮不 deploy 或 restart。
+新 worker 只声明 `product-summary-v4` 的 prepare/review 能力，旧 worker 不能领取 v4。
+已有 v1/v2/v3 报告、缓存、原始数据和尝试记录保留原样，前端继续兼容读取。
+旧版未完成任务不被新 worker 偷换 prompt/schema 接管：可保留旧 release worker 的匹配隔离范围，或用户从原快照显式创建新版本任务；不会自动重跑生产 backlog。
+旧 repair/v3 authoring 模块已移除；legacy `ai-evidence.mjs` 仅保留供历史契约回归资料使用，不被 v4 worker/provider 导入。
+
+
+## 历史版本说明
 
 ## 迁移、启动与演示权限
 
@@ -126,3 +233,57 @@ AI 测试使用确定性 mock 与注入的图片下载器，验证真实 PNG 字
 
 - 当前生产 worker 在 iad1，避免已观测的 sin1/hkg1 到北京 API/CDN 的 TCP 超时。仍使用北京端点与原 model/key，不应通过关闭 TLS 检查解决网络问题。
 - quotes 元素必须是 {commentId,text} 对象；图像观察不当作评论引文。结构化 ID 与正文里提及的证据 ID 均经过校验。系统 prompt 哈希也纳入中间缓存 key；完成报告默认打开有发现的章节，避免空概览造成误解。
+
+## Pending article-v3 diagnostic (2026-11-20; not ready for rollout)
+
+This uncommitted change has **not** produced an accepted real article. Do not
+release it based on typecheck/build alone. The production task and snapshot were
+read in a read-only PostgreSQL transaction; no production data was modified.
+The separate local diagnostic database contains all 78 comments and 22 cached
+images, with SHA-256 checked against the downloaded originals. No recrawl ran.
+
+The authoring contract uses short text blocks and source IDs. Code materializes
+comment text, separates seller metadata citations, checks reference types and
+image/comment relationships, and retains v1/v2 history rendering. Validation
+rejects unsupported conclusions and unverifiable quotes rather than assigning
+replacement evidence. Repair recomputes current errors, reports field paths and
+received types, and resends only images involved in visual corrections. Failed
+prose is excluded from repair source material. Worker claims remain protected by
+pipeline/schema/executor fingerprints and the database trigger.
+
+Migration `007_ai_article_outcomes.sql` adds failed/partial job outcomes and a
+persistent provider-request counter. Requests are reserved before HTTP, so a
+crash or network failure cannot refund a possibly sent request. The default
+`AI_MAX_PROVIDER_REQUESTS=3` covers all automatic/manual retries and repair;
+changing it affects new immutable jobs, not existing tasks. Oversized plans
+which cannot fit their total request budget stop before provider execution.
+
+Measured local attempt (diagnostic job `10871a22-fe21-46dc-9d5f-0ce73fcb0379`):
+
+| Request | Pixels sent | Input tokens | Output tokens | Provider time | Outcome |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 22 | 13,221 | 1,253 | 37.895 s | Wrong comparison enum fields; unsupported claims |
+| 2 | 4 relevant originals | 9,219 | 1,387 | 10.004 s | Unsupported claims/citations retained |
+| 3 | 4 relevant originals | 8,060 | 627 | 9.939 s | Article strings lacked per-paragraph references |
+
+Total: **3 requests, 33,767 tokens** (30,500 input + 3,267 output),
+57.838 s provider time; 331.423 s from local job creation to its failed outcome,
+including pauses for diagnosis/code edits. Cached image preparation/planning took
+0.370 s. These timings are not a comparable successful baseline.
+The requests used the existing local Beijing workspace endpoint; the inspected
+production task used the general DashScope compatible-mode endpoint. Both used
+`qwen3.7-flash`. This endpoint mismatch was discovered after the bounded run and
+must be corrected explicitly before any further real verification.
+
+Typecheck/build and targeted guards passed. The actual failure UI shows no
+completed article, retains source quality diagnostics, opens the matching source
+comment and serves matching image bytes. Reload/history preserved `failed` and
+the request count stayed at 3. Successful article citations remain unverified
+because no accepted article exists. All further AI calls stopped at the cap.
+
+Before a future VM update: finish real full-snapshot acceptance on the explicitly
+confirmed endpoint; review and commit only related changes; stop the old worker,
+back up PostgreSQL, run versioned migrations explicitly, build, then restart web
+and worker from the same release against the same database. Verify `/readyz`,
+worker capability/fingerprint logs, and saved report reload without AI calls.
+No VM/Vercel deployment or production migration was performed in this diagnostic.

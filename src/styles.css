@@ -489,3 +489,96 @@ ol#sell-list{list-style:none;margin:0;padding:0;counter-reset:s}
 .ai-review-article{max-width:850px;margin:32px auto;background:#fffdf8;border-top:3px solid #b93225;padding:clamp(20px,5vw,56px);box-shadow:0 8px 30px #3a251508}.ai-review-verdict{font-family:'Noto Serif SC',serif;font-size:clamp(20px,2.4vw,27px);color:#73271f;line-height:1.7;border-bottom:1px solid #e6dccf;margin-bottom:26px;padding-bottom:16px}.ai-review-prose{font-size:17px;color:#342e28}.ai-review-prose p{margin:0 0 24px;line-height:2.05}.ai-citations{display:inline-flex;gap:4px;vertical-align:middle;flex-wrap:wrap}.ai-citations button{font:11px 'Noto Sans SC',sans-serif;border:0;background:#f2eadd;color:#835c38;padding:2px 5px;border-radius:3px}.ai-citations button:hover,.ai-citations button:focus-visible{background:#e8d5b8;outline:2px solid #b93225}.ai-review-checks{margin-top:28px;padding:12px 22px;background:#f6f0e5;border-left:3px solid #ba8a39}.ai-review-photos{border-top:1px solid #e6dccf;margin-top:24px;padding-top:10px}.ai-review-scope{font-size:12px;line-height:1.8;color:#786c60;border-top:1px solid #e6dccf;padding-top:18px;margin-top:30px}.ai-review-quality,.ai-history,.ai-coverage{margin:20px 0;padding:16px;border:1px solid #ded5c8;border-radius:6px}.ai-report summary{cursor:pointer;font-weight:600;line-height:1.7}.ai-quality-group{display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #e6dccf;padding:12px 0}.ai-statistics{display:block;color:#786c60}.ai-simple-progress{padding:16px;background:#f5ecd9;border-radius:6px}.ai-review-quality .chips{display:flex;flex-wrap:wrap;gap:8px}@media(max-width:640px){.ai-review-article{margin:20px 0;padding:20px 14px}.ai-review-prose{font-size:16px}.ai-review-checks{padding:10px 14px}}
 .ai-scope-reference{border:0;background:transparent;color:#8a7661;font-family:inherit;font-size:11px;padding:2px 6px;text-decoration:underline dotted}.ai-scope-detail{margin-top:18px;font-size:12px;color:#786c60}.ai-scope-detail dl{display:flex;flex-wrap:wrap;gap:16px}.ai-scope-detail dd{margin:4px 0}
 .ai-photo-observation>small{font-size:12px;color:#8a7661}
+
+/* AI report reading layout. Scoped to AI; the basic dashboard is unchanged. */
+.ai-report{padding:0;background:transparent;border:0;border-radius:0;color:#392b22}
+.ai-report-heading{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin:0 2px 14px;color:#827364}
+.ai-report-heading p{margin:0;font-size:12px}
+.ai-product-ribbon{display:flex;align-items:center;gap:24px;padding:18px 26px;margin:18px 0 12px;border:1px solid #dfceba;border-radius:8px;background:linear-gradient(110deg,#f6eddf,#faf5ed)}
+.ai-product-ribbon>div{min-width:0}
+.ai-product-cover{width:76px;height:108px;flex:0 0 76px;object-fit:contain;filter:drop-shadow(2px 5px 5px #432c2126)}
+.ai-product-cover[hidden]{display:none}
+.ai-report .ai-product-ribbon h2{font:600 clamp(20px,2.1vw,27px)/1.55 'Noto Serif SC',serif;margin:0 0 6px;overflow-wrap:anywhere}
+.ai-product-metadata{display:flex;gap:4px 20px;flex-wrap:wrap;margin:0 0 8px;font-size:13px;color:#756352}
+.ai-product-metadata>div{display:flex;gap:8px;min-width:0;max-width:100%}
+.ai-product-metadata dt{flex-shrink:0;color:#927b65}
+.ai-product-metadata dd{margin:0;overflow-wrap:anywhere}
+.ai-product-ribbon small{display:block;font-size:11px;color:#8b735d;line-height:1.8}
+.ai-task-status{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin:10px 2px;font-size:12px;color:#85705e}
+.ai-task-status .ghost-btn{font-size:12px;padding:5px 12px}
+.ai-report .ai-review-article{box-sizing:border-box;max-width:none;margin:12px 0;padding:26px 28px;background:#fffcf7;border:1px solid #e0cdb8;border-radius:8px;box-shadow:0 3px 12px #4e30200a}
+.ai-article-header{padding-bottom:20px;border-bottom:1px solid #eadfd0;margin-bottom:24px}
+.ai-article-label{display:inline-block;background:#a52b29;color:#fff8ea;padding:4px 12px;border-radius:5px;font:600 13px/1.5 'Noto Serif SC',serif;letter-spacing:.04em}
+.ai-report .ai-review-verdict{font:600 clamp(22px,2.6vw,31px)/1.65 'Noto Serif SC',serif;color:#422a20;margin:12px 0 7px;padding:0;border:0;overflow-wrap:anywhere}
+.ai-article-subtitle{display:inline;margin:0;color:#8a7767;font-size:12px}
+.ai-article-header>.ai-citations{margin-right:10px}
+.ai-reading-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,30%);gap:28px;align-items:start}
+.ai-reading-layout--solo{grid-template-columns:minmax(0,1fr)}
+.ai-reading-main{min-width:0}
+.ai-review-prose{font:16px/2.1 'Noto Serif SC',serif;color:#3e3027}
+.ai-report .ai-review-prose p{line-height:2.1;margin:0 0 20px}
+.ai-citations{display:inline-flex;gap:5px;max-width:100%;vertical-align:baseline;flex-wrap:wrap;margin-left:4px}
+.ai-report .ai-citations button{border:1px solid #bf635a;background:transparent;border-radius:12px;color:#a4312d;padding:0 7px;font:11px/1.65 'Noto Sans SC',sans-serif;white-space:nowrap}
+.ai-report .ai-citations button:hover,.ai-report .ai-citations button:focus-visible{background:#f6e8dc;outline:2px solid #c68770;outline-offset:2px}
+.ai-review-photos{border:0;padding:0;margin:22px 0}
+.ai-review-photos h3,.ai-review-checks h3,.ai-evidence-rail h3{font:600 17px/1.7 'Noto Serif SC',serif;color:#9e302a;margin:0 0 10px}
+.ai-photo-observation p{font:15px/2 'Noto Serif SC',serif;margin:0 0 16px}
+.ai-review-checks{margin-top:22px;padding:14px 18px;background:linear-gradient(100deg,#f4ebdc,#f8f1e6);border-left:3px solid #a83930;border-radius:3px 7px 7px 3px}
+.ai-report .ai-review-checks p{margin:8px 0;font-size:14px;line-height:1.9}
+.ai-evidence-rail{min-width:0;border-left:1px solid #e5d6c4;padding-left:22px}
+.ai-report .ai-rail-caption{font-size:11px;color:#8b7a69;line-height:1.7;margin:6px 0 12px}
+.ai-evidence-thumbnails{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
+.ai-evidence-thumbnail{display:block;width:100%;aspect-ratio:1/1;overflow:hidden;padding:0;border:1px solid #e6d8c7;border-radius:7px;background:#f1e8db;color:#8a715e}
+.ai-evidence-thumbnail img{display:block;width:100%;height:100%;object-fit:cover;transition:transform .15s ease}
+.ai-evidence-thumbnail:hover img{transform:scale(1.035)}
+.ai-evidence-thumbnail:focus-visible{outline:2px solid #a7322b;outline-offset:3px}
+.ai-source-comment{margin:14px 0;padding:13px 14px;border:1px solid #e1d0bd;border-radius:7px;background:#faf3e9}
+.ai-source-comment blockquote{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden;margin:0 0 10px;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.9 'Noto Serif SC',serif;color:#4d392c}
+.ai-source-comment figcaption{font-size:11px;line-height:1.8;color:#8b7763;overflow-wrap:anywhere}
+.ai-source-comment button{display:block;margin:9px 0 0 auto;border:1px solid #b35b4d;border-radius:18px;background:transparent;padding:3px 11px;color:#9e302a;font-family:inherit;font-size:12px;line-height:1.7}
+.ai-report .ai-review-quality,.ai-report .ai-coverage,.ai-report .ai-history,.ai-report .ai-preflight{margin:10px 0;padding:12px 18px;border:1px solid #e1ceba;border-radius:7px;background:#faf5ed}
+.ai-report summary{color:#58402d;font:600 14px/1.8 'Noto Serif SC',serif}
+.ai-report summary::marker{color:#9d382c}
+.ai-report details[open]>summary{margin-bottom:16px}
+.ai-report .ai-history label{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0;font-size:12px;color:#7d6957}
+.ai-history select{flex:1;min-width:0;width:100%;max-width:680px;background:#fffaf2;border:1px solid #dac7b0;border-radius:4px}
+.ai-history .pager{flex-wrap:wrap;font-size:12px}
+.ai-report .ai-review-scope{margin:0 0 16px;padding:0;border:0;font-size:13px}
+.ai-review-scope dl{display:flex;flex-wrap:wrap;gap:16px}
+.ai-review-scope dd{margin:4px 0}
+.ai-report .ai-coverage p,.ai-report .ai-preflight p,.ai-report .ai-history p{font-size:12px}
+.ai-report .ai-coverage dl{font-size:13px}
+.ai-report .ai-coverage h3{font-size:15px}
+.ai-simple-progress{padding:10px 16px;margin:10px 0;font-size:13px;background:#f3e9d8;border-left:2px solid #b78052}
+.ai-status-message{padding:12px 16px;background:#f7eae0;border-left:2px solid #a93c30;font-size:13px}
+.ai-report-placeholder .ai-article-header{border:0;margin:0;padding:0}
+.ai-legacy-section{padding:0 0 20px;margin:0 0 22px;border-bottom:1px solid #e7dacb}
+.ai-legacy-section h4{font:600 19px/1.8 'Noto Serif SC',serif;margin:10px 0}
+.ai-legacy-section>small{font-size:11px;color:#927960}
+.ai-legacy-section blockquote{margin:12px 0;padding-left:14px;border-left:2px solid #c49e78;font-size:14px}
+.ai-legacy-navigation{margin:18px 0}
+.ai-report .ai-evidence{position:fixed;z-index:300;right:22px;bottom:22px;width:min(560px,calc(100vw - 44px));box-sizing:border-box;max-height:85vh;overflow:auto;overscroll-behavior:contain;margin:0;padding:24px;background:#fffcf5;border:1px solid #bd8d72;border-top:4px solid #a5322d;border-radius:8px;box-shadow:0 12px 60px #3b251938}
+.ai-evidence>button:first-child{position:sticky;top:0;display:block;margin:0 0 16px auto;background:#fffcf5}
+.ai-evidence h3{font:600 18px/1.7 'Noto Serif SC',serif;overflow-wrap:anywhere}
+.ai-report .ai-reading-footnote{font-size:11px;color:#95816d;margin:18px 2px 0}
+@media(max-width:900px){
+ .ai-reading-layout{grid-template-columns:minmax(0,1fr);gap:24px}
+ .ai-evidence-rail{border-left:0;border-top:1px solid #e5d6c4;padding:22px 0 0}
+ .ai-evidence-thumbnails{grid-template-columns:repeat(4,minmax(0,1fr))}
+ .ai-source-comment{max-width:100%}
+}
+@media(max-width:640px){
+ .ai-report{margin:16px 12px;padding:0}
+ .ai-report-heading{display:block}.ai-report-heading>p:last-child{margin-top:5px}
+ .ai-product-ribbon{padding:14px;gap:14px}.ai-product-cover{width:58px;height:84px;flex-basis:58px}
+ .ai-report .ai-product-ribbon h2{font-size:20px}.ai-product-metadata{gap:4px 12px;font-size:12px}
+ .ai-report .ai-review-article{padding:20px 17px}
+ .ai-report .ai-review-verdict{font-size:23px;line-height:1.65}
+ .ai-report .ai-review-prose{font-size:15px}.ai-report .ai-review-prose p{line-height:2.05}
+ .ai-evidence-thumbnails{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .ai-report .ai-review-quality,.ai-report .ai-coverage,.ai-report .ai-history,.ai-report .ai-preflight{padding:11px 14px}
+ .ai-review-quality .chips{gap:6px}.ai-review-quality .chip{white-space:normal;text-align:left}
+ .ai-task-status{justify-content:space-between}
+ .ai-report .ai-evidence{right:12px;bottom:12px;width:calc(100vw - 24px);max-height:calc(100dvh - 24px);padding:18px}
+}
+@media(prefers-reduced-motion:reduce){.ai-evidence-thumbnail img{transition:none}}

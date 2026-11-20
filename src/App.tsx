@@ -684,7 +684,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
 
         <nav className="analysis-tabs" aria-label="分析模式"><button className={`chip ${analysisTab==='basic'?'on':''}`} onClick={()=>setAnalysisTab('basic')}>基础分析</button><button className={`chip ${analysisTab==='ai'?'on':''}`} onClick={()=>user?.plan==='pro'?setAnalysisTab('ai'):setUpgrade(true)}>AI 深度分析</button></nav>
         {analysisTab==='basic'&&product && <Desk product={product} comments={comments} listeningPid={runPid && runPid !== product.pid ? runPid : null} />}
-        {analysisTab==='ai'&&<AIReport key={`${user?.id}:${user?.plan}:${cloudRun?.product===product?cloudRun.id:'none'}`} user={user} runId={cloudRun?.product===product&&cloudRun?.owner===user?.id?cloudRun.id:null}/> }
+        {analysisTab==='ai'&&<AIReport key={`${user?.id}:${user?.plan}:${cloudRun?.product===product?cloudRun.id:'none'}`} user={user} snapshotProduct={cloudRun?.product===product&&cloudRun?.owner===user?.id?product:null} runId={cloudRun?.product===product&&cloudRun?.owner===user?.id?cloudRun.id:null}/> }
 
         {(archive.length > 0 || product || user) && (
           <section id="lib" className="lib">

@@ -4,8 +4,8 @@ import {createHash} from 'node:crypto';
 // fingerprint of replacement files later written into the same checkout.
 const sources = [
   'ai-engine-version.mjs', 'ai-pipeline.mjs', 'ai-config.mjs', 'ai-jobs.mjs',
-  'ai-worker.mjs', 'worker-start.mjs', 'ai-worker-core.mjs', 'ai-provider.mjs', 'ai-evidence.mjs', 'ai-images.mjs',
-  'ai-review.mjs', 'ai-review-jobs.mjs', 'ai-review-prepare.mjs', 'ai-review-repair.mjs',
+  'ai-worker.mjs', 'worker-start.mjs', 'ai-worker-core.mjs', 'ai-provider.mjs', 'ai-images.mjs',
+  'ai-models.mjs','ai-model-runtime.mjs','ai-review.mjs', 'ai-review-jobs.mjs', 'ai-review-prepare.mjs',
 ];
 const hash = createHash('sha256');
 for (const source of sources) {

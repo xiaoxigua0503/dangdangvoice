@@ -1,6 +1,8 @@
+> 最新验证：2026-11-18，实际商品 30033347 已在 local 与 Vercel 从链接采集、云保存、全量 AI 到历史/刷新完成。Web hnd1，worker iad1；本次返回 12 条有内容评论、0 张 review 图片。详见文末，不能据此承诺所有商品或网络始终可采集。
+
 # 当前源码的生产部署（2026-11-18）
 
-当前生产入口：**https://dangdangvoice.vercel.app/login**。托管项目 `xiaoxigua/dangdangvoice`，区域 `sin1`，Web 为 Vercel Node 22 Functions + 当前 Vite 静态资源，AI 为独立 Vercel Daemon `ai-worker`。没有以旧 ZIP 发布，也没有把缺失后端的静态页面称为完成。
+当前生产入口：**https://dangdangvoice.vercel.app/login**。托管项目 `xiaoxigua/dangdangvoice`，Web 区域 `hnd1`，独立 AI daemon 区域 `iad1`。Web 为 Vercel Node 22 Functions + 当前 Vite 静态资源，AI 为独立 Vercel Daemon `ai-worker`。没有以旧 ZIP 发布，也没有把缺失后端的静态页面称为完成。
 
 ## 已完成与尚未完成
 
@@ -90,10 +92,10 @@ owner 命令不创建/重置密码，不跳过邮箱验证，使用数据库事�
 ## 比赛演示后的暂停命令
 
 ```bash
-vercel daemons scale ai-worker sin1=0 --project dangdangvoice --scope xiaoxigua
+vercel daemons scale ai-worker iad1=0 --project dangdangvoice --scope xiaoxigua
 ```
 
-这会停止整个 Daemon 实例，停止其分配内存消耗，保留 Web、数据库、用户、任务与报告。仅把 `AI_WORKER_ENABLED` 改为 false 不会停止实例内存计量。需要恢复时 `sin1=1`（此时仍会使用最新已部署的环境变量）。缩容覆盖会保留到后续部署，除非修改或 --reset。
+这会停止整个 Daemon 实例，停止其分配内存消耗，保留 Web、数据库、用户、任务与报告。仅把 `AI_WORKER_ENABLED` 改为 false 不会停止实例内存计量。需要恢复时 `iad1=1`（此时仍会使用最新已部署的环境变量）。缩容覆盖会保留到后续部署，除非修改或 --reset。
 
 本次 CLI `vercel billing usage --json --scope xiaoxigua` 返回当前计费周期的 usage/cost data unavailable（不能视为用量为零）。官方 Hobby 月配额仍为 420 GB-hours 内存、5 Active CPU-hours，当前实例分配 1 GiB / 1 vCPU，剩余实时额度未能从该 CLI 取得，需在账户 Usage 面板查看。没有升级或购买资源。
 
@@ -107,3 +109,37 @@ env -u DATABASE_URL -u WORKER_DATABASE_URL -u DDV_PROCESS_ROLE \
  node --env-file=.private/production.env server/owner-admin.mjs \
  OWNER_EMAIL https://dangdangvoice.vercel.app
 ```
+
+## 2026-11-18 AI 状态/历史修复发布
+
+当前发布 `dpl_6CzrKrG9sc4qVvdmER7iPiBiTJdF`，生产别名仍为 https://dangdangvoice.vercel.app 。Web 与独立 daemon 已切换到本次 Node/PostgreSQL 修复，未合并 Qwen 转换、未执行迁移或重建数据。Daemon 1/1 ready；运行时脱敏摘要确认 production、同一 Neon neondb/public、worker 直连、Qwen 北京端点、qwen3.7-flash、key 存在且 enabled=true。HTTPS /readyz=200，未登录 AI 接口=401。
+
+本地用实际管理员账户从导入 UI 创建了仅含一条原评论与一张原图的独立诊断快照；任务 38940e51-9d24-4b3a-9bbb-b0aacd6fe658 经真实模型处理，UI 显示 0/2→1/2→2/2，最终 complete、非 partial；图片格式校验失败后的有限自动重试成功。刷新后同一报告及任务历史仍可读，移动宽度 390px 无横向溢出。TypeScript/build 通过，没有运行批量测试。
+
+生产本次真实模型与已登录 UI 验证尚待拥有者在共享浏览器登录 Pro/admin 账户；尚未提交生产诊断任务，不能将部署 ready 声称为生产 AI 已验证。旧生产任务的 worker_error/图片失败细因超出历史日志保留期限，需在授权的小任务上使用新阶段日志核实。没有重置账号或替换已有 key。
+
+
+## 2026-11-18 已完成生产 UI / 真实多模态验证
+
+最新生产发布：`dpl_9T5QpRc8G1NLxMcZV9jn4HbMHgBE`，URL https://dangdangvoice.vercel.app 。Web 仍在 sin1，worker 现为 iad1 的一个 1 GiB Daemon；不增加实例配额、不购买资源。保留同一 Neon neondb/public、worker 直连、北京 DashScope、原 key 和 qwen3.7-flash。
+
+实际问题与修复：sin1/hkg1 container 到北京 API 和当当 CDN 的 TCP 连接超时，而控制域 HTTPS 成功；iad1 的 API HEAD 得到 HTTP 响应、图片 HEAD=200，随后真实文本与图片推理成功。另修复 prompt 未明确 quotes 对象结构的问题，补充动态引用约束，校验正文中的证据编号。仅对本次诊断任务的一个不合格图片单元重新校验并通过 UI 重试，没有重试旧生产任务或整个 backlog。缓存额外绑定真实 system prompt 哈希，新任务 prompt version 为 ddv-evidence-3。
+
+已由 owner 的已验证 Pro/admin 会话从 UI 导入明确标注的一条原评论/一张原图并启动任务 `8b28836a-1ef7-4399-a78d-909dda4558da`，snapshot `b48188d4`。UI 观察到运行与 retry 状态、1/2→2/2；最终评论 1/1、图片 1/1、失败 0、complete=true、partial=false，两个发现。图片证据通过已授权接口读回 image/jpeg、149872 bytes。刷新后 task ID、两条发现、历史状态和生成时间保留；尝试数维持 13，刷新没有 POST AI 请求。累计记录 5210 input / 1547 output tokens（含失败校验的有限尝试）。没有验证真实邮件投递。
+
+临时网络诊断默认关闭，只有 AI_NETWORK_DIAGNOSTICS=true 且提供 AI_NETWORK_DIAGNOSTIC_JOB_ID 才执行无 Authorization、无推理的有界 HEAD 检查。生产保留的该任务 UUID 自身不会触发检查；CLI 删除环境项需要显式人工确认，因此未绕过平台确认。不要为日常 worker 开启探测。
+
+暂停演示后的 worker：
+```bash
+vercel daemons scale ai-worker iad1=0 --project dangdangvoice --scope xiaoxigua
+```
+
+生产最终 UI 补充：切换到旧 task 再切回、从 cloud history 恢复同一快照均保持正确报告；390px viewport 无横向溢出。最后再次 GET 状态/报告时 attempts 仍为 13，两个单元用最新引用/引文 validator 复核均通过。
+
+## 实际商品 30033347 复核（2026-11-18）
+
+输入 https://product.dangdang.com/30033347.html ，保持默认全部列表页与详情设置。local 和生产 UI 均完成两页 12 条评论的采集及账户云保存，再由各自真实 qwen3.7-flash 完成一个文本工作单元：local c92907d8-5d25-42b1-b79e-a5b07e966eec，生产 a43d555b-5fac-48da-b652-a8f78f6809af。两边各一次模型请求、12/12 评论完成、0 失败，报告落库后刷新与历史恢复不重新推理。站点 summary 为 1822 总计、1810 自动评价、12 内容评价、0 图片，不能声称分析了 1822 条原文或此次验证了图片推理。没有用抽样导入替代这次 URL 采集。
+
+生产原 Web 出口出现 fetch failed，改为 iad1 后实测上游 HTTP 403；将 Web 改为 hnd1 后真实页面及两页列表成功。worker 保持 iad1。Vercel 的部分详情页仍可能受风控，本次保留完整短评列表，未获取成功的封面/价格不会编造。新 UI 区分网络错误、超时、HTTP 状态和风控；详情计数改为尝试次数，长评详情失败会标注范围限制。采集/导入/主动恢复新的快照时清除旧 aiJob 选择，默认只自动选择当前快照的报告，避免旧商品状态被误认为本次任务。全账户历史仍保留且可手动切换。
+
+本次最终发布 `dpl_3XRQ5DPpGTe6mrvwEQjxJEvXLR95`（https://dangdangvoice.vercel.app）。最终资源 index-D8i2PEL-.js 已在 local/生产页面加载，恢复当前云快照自动选择同一任务，观测到 0 次新建 AI POST，数据库两边 attempts 仍为 1。生产 Daemon 最终发布 ready 1/1，iad1 一实例；local 仅一 web 与一 worker。执行 typecheck、生产 build、allowlist 独立发布打包；没有运行测试套件。本次不验证 SMTP 或其他商品、所有区域的持续可达性。

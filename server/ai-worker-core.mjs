@@ -1,26 +1,24 @@
 import {AI_ENGINE_VERSION} from './ai-engine-version.mjs';
-import {repairPlan, applyRepair, REPAIR_PROMPT, constrainedRepairSchema, priorImageObservations, scalarFieldSources} from "./ai-review-repair.mjs";
-import {advertiseWorker, supportsUnit, WORKER_CAPABILITIES} from "./ai-pipeline.mjs";
+import {advertiseWorker,supportsUnit,WORKER_CAPABILITIES} from './ai-pipeline.mjs';
 import {prepareReview,reviewImages} from './ai-review-prepare.mjs';
-import {validateReview,REVIEW_PROMPT,reviewParts} from './ai-review.mjs';
+import {validateReview,REVIEW_PROMPT} from './ai-review.mjs';
+import {selectModel,recordFallback} from './ai-model-runtime.mjs';
 import {insertReviewUnits} from './ai-review-jobs.mjs';
-import { randomUUID } from "node:crypto";
-import { pool } from "./db.mjs";
-import { digest, PROMPT_VERSION } from "./ai-config.mjs";
-import { infer, usageFrom } from "./ai-provider.mjs";
-import { downloadImage } from "./ai-images.mjs";
-import { validateResult, SYSTEM_PROMPT } from "./ai-evidence.mjs";
-import { finalize } from "./ai-jobs.mjs";
+import {randomUUID} from 'node:crypto';
+import {pool} from './db.mjs';
+import {digest,PROMPT_VERSION} from './ai-config.mjs';
+import {infer,usageFrom} from './ai-provider.mjs';
+import {downloadImage} from './ai-images.mjs';
+import {finalize} from './ai-jobs.mjs';
 const safeErrors = new Set([
-  "unsupported_evidence_claim",
+  "provider_request_budget",
+  "provider_model_unavailable",
+  "provider_models_unavailable",
   "model_limits_unverified",
   "context_budget_exceeded",
+  "context_budget_unconfirmed",
   "invalid_structure",
   "invalid_reference",
-  "missing_evidence",
-  "invented_quote",
-  "unsupported_statistics",
-  "definitive_authenticity_claim",
   "provider_not_configured",
   "provider_rate_limit",
   "provider_auth_failed",
@@ -72,7 +70,7 @@ export async function claim(c, provider = process.env.AI_PROVIDER || "qwen") {
     await advertiseWorker(c);
     const candidates = (
       await c.query(
-        `SELECT w.*,j.user_id,j.config,j.config_hash FROM ai_units w JOIN ai_jobs j ON j.id=w.job_id JOIN users a ON a.id=j.user_id WHERE ($3::uuid IS NULL OR j.id=$3::uuid) AND EXISTS (SELECT 1 FROM jsonb_each($4::jsonb) cap WHERE cap.key=coalesce(j.config->>'pipelineVersion',CASE j.config->>'schemaVersion' WHEN '1' THEN 'evidence-v1' WHEN '2' THEN 'product-review-v2' END) AND cap.value->>'schema'=j.config->>'schemaVersion' AND (j.config->>'executorVersion' IS NULL OR cap.value->>'engineVersion'=j.config->>'executorVersion') AND (cap.value->'kinds') ? w.kind) AND a.plan='pro' AND a.disabled_at IS NULL AND (a.pro_expires_at IS NULL OR a.pro_expires_at>now()) AND a.verified_at IS NOT NULL AND j.config->>'provider'=$2 AND j.state IN ('queued','running') AND ((w.state='pending' AND w.next_at<=now()) OR (w.state='running' AND w.lease_until<now())) AND (w.state='running' OR (SELECT count(*) FROM ai_units active JOIN ai_jobs ownerjob ON ownerjob.id=active.job_id WHERE ownerjob.user_id=j.user_id AND active.state='running' AND active.lease_until>now())<$1) ORDER BY w.next_at,w.id FOR UPDATE OF w SKIP LOCKED LIMIT 32`,
+        `SELECT w.*,j.user_id,j.config,j.config_hash,j.model_cursor FROM ai_units w JOIN ai_jobs j ON j.id=w.job_id JOIN users a ON a.id=j.user_id WHERE ($3::uuid IS NULL OR j.id=$3::uuid) AND EXISTS (SELECT 1 FROM jsonb_each($4::jsonb) cap WHERE cap.key=coalesce(j.config->>'pipelineVersion',CASE j.config->>'schemaVersion' WHEN '1' THEN 'evidence-v1' WHEN '2' THEN 'product-review-v2' WHEN '3' THEN 'product-review-v3' WHEN '4' THEN 'product-summary-v4' END) AND cap.value->>'schema'=j.config->>'schemaVersion' AND (j.config->>'executorVersion' IS NULL OR cap.value->>'engineVersion'=j.config->>'executorVersion') AND (cap.value->'kinds') ? w.kind) AND a.plan='pro' AND a.disabled_at IS NULL AND (a.pro_expires_at IS NULL OR a.pro_expires_at>now()) AND a.verified_at IS NOT NULL AND j.config->>'provider'=$2 AND j.state IN ('queued','running') AND ((w.state='pending' AND w.next_at<=now()) OR (w.state='running' AND w.lease_until<now())) AND (w.state='running' OR (SELECT count(*) FROM ai_units active JOIN ai_jobs ownerjob ON ownerjob.id=active.job_id WHERE ownerjob.user_id=j.user_id AND active.state='running' AND active.lease_until>now())<$1) ORDER BY w.next_at,w.id FOR UPDATE OF w SKIP LOCKED LIMIT 32`,
         [runtime.user_concurrency, provider, process.env.AI_WORKER_JOB_ID || null, JSON.stringify(WORKER_CAPABILITIES)],
       )
     ).rows;
@@ -131,54 +129,6 @@ export async function claim(c, provider = process.env.AI_PROVIDER || "qwen") {
     throw e;
   }
 }
-async function imageFor(c, unit, downloadFn, signal) {
-  let img = (
-    await c.query("SELECT * FROM ai_images WHERE job_id=$1 AND id=$2", [
-      unit.job_id,
-      unit.input.imageId,
-    ])
-  ).rows[0];
-  if (!img) throw new Error("image_unavailable");
-  if (img.bytes)
-    return { bytes: img.bytes, mime: img.mime, hash: img.content_hash };
-  // One immutable downloaded representation per URL, even with many context units.
-  await c.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [
-    "download:" + unit.job_id + ":" + img.id,
-  ]);
-  img = (
-    await c.query("SELECT * FROM ai_images WHERE job_id=$1 AND id=$2", [
-      unit.job_id,
-      img.id,
-    ])
-  ).rows[0];
-  if (img.bytes)
-    return { bytes: img.bytes, mime: img.mime, hash: img.content_hash };
-  const image = await downloadFn(img.url, unit.config, signal);
-  const hash = digest(image.bytes);
-  await c.query("BEGIN");
-  try {
-    await c.query("SELECT id FROM ai_jobs WHERE id=$1 FOR UPDATE", [
-      unit.job_id,
-    ]);
-    const total = +(
-      await c.query(
-        "SELECT coalesce(sum(octet_length(bytes)),0) n FROM ai_images WHERE job_id=$1",
-        [unit.job_id],
-      )
-    ).rows[0].n;
-    if (total + image.bytes.length > unit.config.maxTotalImageBytes)
-      throw Object.assign(new Error("total_image_budget"), { permanent: true });
-    await c.query(
-      "UPDATE ai_images SET bytes=$3,mime=$4,content_hash=$5,downloaded_at=now(),error=NULL WHERE job_id=$1 AND id=$2",
-      [unit.job_id, img.id, image.bytes, image.mime, hash],
-    );
-    await c.query("COMMIT");
-    return { ...image, hash };
-  } catch (e) {
-    await c.query("ROLLBACK");
-    throw e;
-  }
-}
 export async function runOne({
   inferFn = infer,
   downloadFn = downloadImage,
@@ -189,7 +139,7 @@ export async function runOne({
   let unit,
     heartbeat,
     usage = {},
-    cacheHit = false, stage = "claim", rejectedValidation=null;
+    cacheHit = false, stage = "claim", rejectedValidation=null, selection=null;
   const phaseMs={};let phaseAt=Date.now();
   const markStage=name=>{phaseMs[stage]=(phaseMs[stage]||0)+Date.now()-phaseAt;phaseAt=Date.now();stage=name;};
   const log = (event, extra = {}) => console.log("ai_unit " + JSON.stringify({at:new Date().toISOString(),event, job:unit?.job_id, unit:unit?.id, kind:unit?.kind, stage, ...extra}));
@@ -220,33 +170,14 @@ export async function runOne({
       AbortSignal.timeout(unit.config.timeoutMs + 20000),
     ]);
     markStage("image_download");
-    const v2=unit.config.schemaVersion===2;
-    const image = unit.kind==="synthesis" ? [] : v2 && unit.kind!=="prepare" ? await reviewImages(c,unit) :
-      unit.kind === "image"
-        ? await imageFor(c, unit, downloadFn, workSignal)
-        : null;
-    markStage("cache");
-    const prior = v2 ? (await c.query("SELECT validation FROM ai_attempts WHERE unit_id=$1 AND jsonb_typeof(validation->'draft')='object' ORDER BY id DESC LIMIT 1",[unit.id])).rows[0]?.validation : null;
-    let feedbackIssues=prior?.issues;
-    if(v2 && prior?.draft) {
-      try {validateReview(prior.draft,{...unit.input,parts:reviewParts(unit.input)});}
-      catch(e) {feedbackIssues=[...(prior.issues||[]),...(e.validationIssues||[])];}
+    const image=unit.kind==='prepare'?[]:await reviewImages(c,unit);
+    markStage('cache');
+    if(unit.kind!=='prepare'){
+      selection=await selectModel(c,unit,image);
+      const previous=(await c.query("SELECT a.usage->'providerError'->>'fallbackReason' reason FROM ai_attempts a JOIN ai_units u ON u.id=a.unit_id WHERE u.job_id=$1 AND a.usage->'providerError'->>'fallbackReason' IS NOT NULL ORDER BY a.id DESC LIMIT 1",[unit.job_id])).rows[0];
+      usage.provider={model:selection.config.model,endpointHost:new URL(selection.config.endpoint).hostname,endpointHash:digest(selection.config.endpoint),index:selection.index,fallbackReason:selection.skipped.at(-1)?.reason||(selection.index>0?previous?.reason:null),skipped:selection.skipped};
     }
-    const repair=v2&&unit.kind!=='prepare'?repairPlan(prior?.draft,feedbackIssues):null;
-    const observations=repair?priorImageObservations(prior.draft,repair.targets):[];
-    const textOnlyRepair=!!repair && (observations.length>0||(Array.isArray(image)&&image.length===0));
-    const fieldSources=repair&&textOnlyRepair?scalarFieldSources(repair,prior.draft,unit.input,observations):undefined;
-    const cacheKey = digest({
-      config: unit.config_hash,
-      engineVersion:AI_ENGINE_VERSION,
-      prompt: digest(repair?REPAIR_PROMPT:v2?REVIEW_PROMPT:SYSTEM_PROMPT),
-      repair:repair?{key:repair.key,textOnly:textOnlyRepair}:null,
-      kind: unit.kind,
-      input: unit.input,
-      parts: unit.input.parts,
-      product: unit.input.product,
-      image: Array.isArray(image)?image.map(i=>i.hash):image?.hash || null,
-    });
+    const cacheKey=digest({config:unit.config_hash,engineVersion:AI_ENGINE_VERSION,prompt:digest(REVIEW_PROMPT),profile:selection?.cacheProfile||null,input:unit.input,image:image.map(i=>({id:i.id,hash:i.hash}))});
     await c.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [
       "cache:" + unit.job_id + ":" + cacheKey,
     ]);
@@ -261,38 +192,22 @@ export async function runOne({
       markStage("image_download_and_plan");result=await prepareReview(unit,downloadFn,workSignal);
     } else if (cached) {
       cacheHit = true;
-      const remapped = v2 ? cached.result : {
-        findings: cached.result.findings.map((f) => ({
-          ...f,
-          images: f.images.length ? [unit.input.imageId] : [],
-        })),
-      };
-      result = v2?validateReview(remapped,{...unit.input,parts:reviewParts(unit.input)}):validateResult(remapped, unit.input);
+      result=validateReview(cached.result,unit.input);
     } else {
-      markStage("provider");
-      log("provider_started", {model:unit.config.model, image:Array.isArray(image)?!textOnlyRepair&&image.length>0:!!image,mode:repair?(textOnlyRepair?"text_repair":"multimodal_repair"):unit.kind,repairTargets:repair?.targets});
-      const response = await inferFn(
-        unit.config,
-        {...unit.input,...(repair?{mode:"repair",textOnlyRepair,priorImageObservations:observations,fieldSources,repairTargets:repair.entries.map(({path,key})=>({path,key})),responseSchema:textOnlyRepair?constrainedRepairSchema(repair,unit.input):repair.schema}:{}),validationFeedback:feedbackIssues?{issues:feedbackIssues}:undefined,previousValidationError:["invalid_reference","invented_quote","invalid_structure","missing_evidence","unsupported_statistics","unsupported_evidence_claim","definitive_authenticity_claim"].includes(unit.error)?unit.error:undefined},
-        textOnlyRepair?[]:image,
-        workSignal,
-      );
-      usage = response.usage || {};
-      markStage("validation");
-      let candidate=repair?prior.draft:response.result;
-      try {
-        if(repair)candidate=applyRepair(response.result,prior.draft,repair,{textOnly:textOnlyRepair});
-        result = v2?validateReview(candidate,{...unit.input,parts:reviewParts(unit.input)}):validateResult(candidate, unit.input);
-        if(repair)usage={...usage,repair:{paths:repair.targets,sourceDraftHash:digest(prior.draft),textOnly:textOnlyRepair}};
-      } catch(e) {
-        if(v2)rejectedValidation={issues:e.validationIssues||[{code:e.message}],draft:candidate,promptVersion:PROMPT_VERSION,executedPromptHash:digest(repair?REPAIR_PROMPT:REVIEW_PROMPT)};
-        log("validation_rejected",{code:e.message,issues:e.validationIssues?.map(({code,path,rule})=>({code,path,rule})),allowedComments:[...new Set(unit.input.parts.map(p=>p.commentId))],imageId:unit.input.imageId||null,findings:Array.isArray(response.result?.findings)?response.result.findings.length:null});
-        throw e;
-      }
+      markStage('provider');
+      // One HTTP call per durable attempt. No in-request fallback/repair loop.
+      const bodyBudget=selection.config;
+      log('provider_started',{model:bodyBudget.model,images:image.length,mode:'full_multimodal'});
+      await reserveProviderRequest(c,unit,selection,usage);
+      const response=await inferFn(bodyBudget,unit.input,image,workSignal);
+      usage={...usage,...response.usage,delivered:{comments:unit.input.comments.length,images:image.length}};
+      markStage('validation');
+      try{result=validateReview(response.result,unit.input);}
+      catch(e){rejectedValidation={issues:e.validationIssues||[{code:e.message}],draft:response.result,promptVersion:PROMPT_VERSION};throw e;}
     }
     if (control.signal.aborted) throw new Error("aborted");
     markStage("persist");
-    usage={...usage,phaseMs,execution:{engineVersion:AI_ENGINE_VERSION,promptVersion:unit.config.schemaVersion===2?PROMPT_VERSION:unit.config.promptVersion,schemaVersion:unit.config.schemaVersion,pipelineVersion:unit.config.pipelineVersion|| (unit.config.schemaVersion===2?"product-review-v2":"evidence-v1")}};
+    usage={...usage,phaseMs,execution:{engineVersion:AI_ENGINE_VERSION,promptVersion:unit.config.schemaVersion>=2?PROMPT_VERSION:unit.config.promptVersion,schemaVersion:unit.config.schemaVersion,pipelineVersion:unit.config.pipelineVersion}};
     await c.query("BEGIN");
     const owned = (
       await c.query(
@@ -324,7 +239,9 @@ export async function runOne({
   } catch (e) {
     await c.query("ROLLBACK").catch(() => {});
     if (!unit?.id) throw e;
-    if (e.providerUsage) usage = usageFrom(e.providerUsage);
+    if (e.providerUsage) usage = {...usage,...usageFrom(e.providerUsage)};
+    if(e.modelSelection)usage.modelSelection=e.modelSelection;
+    if(e.httpStatus)usage.providerError={httpStatus:e.httpStatus,code:e.providerCode||null,fallbackReason:e.fallbackReason||null,retryAfterMs:e.retryAfterMs??null};
     if(e.providerDiagnostic)rejectedValidation={issues:[{code:e.message,path:"provider"}],providerDiagnostic:e.providerDiagnostic,promptVersion:PROMPT_VERSION};
     const code = safeErrors.has(e.message) || /^(?:provider_http_\d{3}|provider_timeout|provider_network_error|provider_quota_exhausted|image_http_\d{3}|image_timeout)$/.test(e.message)
       ? e.message
@@ -334,23 +251,25 @@ export async function runOne({
             ["AbortError", "TimeoutError"].includes(e.name)
           ? "request_timeout"
           : "worker_error";
-    markStage("failed");usage={...usage,phaseMs,execution:{engineVersion:AI_ENGINE_VERSION,promptVersion:unit.config.schemaVersion===2?PROMPT_VERSION:unit.config.promptVersion,schemaVersion:unit.config.schemaVersion,pipelineVersion:unit.config.pipelineVersion|| (unit.config.schemaVersion===2?"product-review-v2":"evidence-v1")}};
+    markStage("failed");usage={...usage,phaseMs,execution:{engineVersion:AI_ENGINE_VERSION,promptVersion:unit.config.schemaVersion>=2?PROMPT_VERSION:unit.config.promptVersion,schemaVersion:unit.config.schemaVersion,pipelineVersion:unit.config.pipelineVersion}};
     log("failed", {code, phaseMs, httpStatus:e.httpStatus, network:networkErrors(e)});
     const permanent =
       e.permanent ||
-      ["provider_auth_failed", "provider_not_configured", "model_limits_unverified", "context_budget_exceeded"].includes(code);
+      ["provider_auth_failed", "provider_not_configured", "model_limits_unverified", "context_budget_exceeded", "context_budget_unconfirmed"].includes(code);
     await c.query("BEGIN");
     try {
       const live = (
-        await c.query("SELECT state FROM ai_jobs WHERE id=$1 FOR UPDATE", [
+        await c.query("SELECT state,provider_requests FROM ai_jobs WHERE id=$1 FOR UPDATE", [
           unit.job_id,
         ])
       ).rows[0];
       if (live) {
+        const leased=(await c.query("SELECT 1 FROM ai_units WHERE id=$1 AND lease_token=$2 AND state='running' FOR UPDATE",[unit.id,unit.leaseToken])).rowCount>0;
+        const fallback=leased&&live.state!=='cancelled'?await recordFallback(c,unit,selection,e):false;
         const state =
           live.state === "cancelled"
             ? "cancelled"
-            : permanent || unit.attempts + 1 >= unit.config.maxAttempts
+            : (permanent&&!fallback) || live.provider_requests>=(unit.config.maxProviderRequests||3) || unit.attempts + 1 >= Math.min(unit.config.maxAttempts,unit.config.maxProviderRequests||3)
               ? "failed"
               : "pending";
         await c.query(
@@ -360,25 +279,9 @@ export async function runOne({
             unit.leaseToken,
             state,
             code,
-            Math.min(120000, retryBaseMs * 2 ** unit.attempts),
+            fallback?0:Math.max(e.retryAfterMs||0,Math.min(120000,retryBaseMs*2**unit.attempts)),
           ],
         );
-        if (
-          (unit.kind === "image" && code.startsWith("image_")) ||
-          (unit.kind === "image" &&
-            [
-              "unsupported_image_host",
-              "invalid_image_url",
-              "unsafe_image_address",
-              "unsupported_image_format",
-              "invalid_image_content",
-              "total_image_budget",
-            ].includes(code))
-        )
-          await c.query(
-            "UPDATE ai_images SET error=$3 WHERE job_id=$1 AND id=$2 AND bytes IS NULL",
-            [unit.job_id, unit.input.imageId, code],
-          );
         await c.query(
           "UPDATE ai_attempts SET state=$2,ended_at=now(),error=$3,usage=$4,validation=$5 WHERE id=$1",
           [unit.attemptId, state, code, usage, rejectedValidation],
@@ -398,4 +301,17 @@ export async function runOne({
     await c.query("SELECT pg_advisory_unlock_all()").catch(() => {});
     c.release();
   }
+}
+
+// Reserve durably before HTTP, including network failures and fallback. The job
+// lock serializes parallel stages. Crashes cannot refund a possibly sent request.
+async function reserveProviderRequest(c,unit,selection,usage){
+ await c.query('BEGIN');
+ try{
+  const job=(await c.query(`SELECT j.provider_requests FROM ai_jobs j JOIN users a ON a.id=j.user_id WHERE j.id=$1 AND j.state='running' AND a.plan='pro' AND a.disabled_at IS NULL AND a.verified_at IS NOT NULL AND (a.pro_expires_at IS NULL OR a.pro_expires_at>now()) AND EXISTS(SELECT 1 FROM ai_units w WHERE w.id=$2 AND w.job_id=j.id AND w.lease_token=$3 AND w.state='running') FOR UPDATE OF j`,[unit.job_id,unit.id,unit.leaseToken])).rows[0];
+  if(!job)throw new Error('aborted');
+  if(job.provider_requests>=(unit.config.maxProviderRequests||3))throw Object.assign(new Error('provider_request_budget'),{permanent:true});
+  await c.query('UPDATE ai_jobs SET provider_requests=provider_requests+1,model_cursor=$2 WHERE id=$1',[unit.job_id,selection.index]);
+  await c.query('UPDATE ai_attempts SET provider_request=true,usage=$2 WHERE id=$1',[unit.attemptId,usage]);await c.query('COMMIT');
+ }catch(e){await c.query('ROLLBACK');throw e;}
 }

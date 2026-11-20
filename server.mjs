@@ -862,7 +862,7 @@ export async function requestHandler(req, res) {
       res.setHeader('Cache-Control','no-store');
       try {
         if(!pool)throw new Error('unconfigured');
-        const r=await pool.query("SELECT 1 FROM schema_migrations WHERE version='003_admin.sql'");
+        const r=await pool.query("SELECT 1 FROM schema_migrations WHERE version='008_ai_model_fallback.sql'");
         if(!r.rowCount)throw new Error('migration_required');
         return json(res,200,{status:'ready'});
       } catch { return json(res,503,{status:'not_ready'}); }

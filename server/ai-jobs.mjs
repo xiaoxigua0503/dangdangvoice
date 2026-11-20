@@ -6,26 +6,6 @@ import { digest, numberEnv, aiConfig, providerReady } from "./ai-config.mjs";
 const fail = (status, msg) => {
   throw Object.assign(new Error(msg), { status });
 };
-export function batchParts(parts, config) {
-  const batches = [];
-  let batch = [],
-    size = 0;
-  for (const part of parts) {
-    if (
-      batch.length &&
-      (batch.length >= config.batchComments ||
-        size + part.text.length > config.batchChars)
-    ) {
-      batches.push(batch);
-      batch = [];
-      size = 0;
-    }
-    batch.push(part);
-    size += part.text.length;
-  }
-  if (batch.length) batches.push(batch);
-  return batches;
-}
 export function makePlan(rows, product, config) {
   const comments = [],
     parts = [],
@@ -47,32 +27,7 @@ export function makePlan(rows, product, config) {
       sourceId: row.cid == null ? null : String(row.cid),
       data,
     });
-    const texts =
-      data.text_full && data.text_full !== data.text
-        ? [
-            ["text", data.text],
-            ["text_full", data.text_full],
-          ]
-        : [["text", data.text_full || data.text]];
-    let part = 0;
-    for (const [field, text] of texts) {
-      const chars = Array.from(text);
-      if (!chars.length && texts.length > 1) continue;
-      for (
-        let offset = 0;
-        offset < Math.max(1, chars.length);
-        offset += Math.floor(config.batchChars / 2)
-      )
-        parts.push({
-          commentId: id,
-          score: data.score, date: data.date, variant: data.variant, is_auto: data.is_auto, source: data.source,
-          part: part++,
-          field,
-          text: chars
-            .slice(offset, offset + Math.floor(config.batchChars / 2))
-            .join(""),
-        });
-    }
+    parts.push({commentId:id}); // link metadata only; full text remains in comments
     const pics = Array.isArray(row.pics) ? row.pics : [];
     const urls = pics.map((p, photoIndex) =>
       typeof p?.big === "string" && p.big
@@ -125,7 +80,7 @@ export async function loadOwnedRun(userId, runId, c = pool) {
   const p = run.product;
   const product = {
     pid: p.pid, name:p.name, source:p.source, collected_at:p.collected_at,
-    sellerMetadata: Object.fromEntries(['description','price','specifications','variants','publisher','author','isbn'].filter(k=>p[k]!=null).map(k=>[k,p[k]])),
+    sellerMetadata: Object.fromEntries(['description','price','specifications','variants','publisher','author','isbn'].filter(k=>p[k]!=null||p.sellerMetadata?.[k]!=null).map(k=>[k,p[k]??p.sellerMetadata[k]])),
     site: (()=>{const site=p.site||p.analysis?.site||{};return Object.fromEntries(['total_comment_num','pageCount','average_score'].filter(k=>site[k]!=null).map(k=>[k,site[k]]));})(),
     note_sample:p.analysis?.note_sample || null, note_partial:p.analysis?.note_partial || null,
   };
@@ -168,10 +123,10 @@ export async function preview(userId, runId) {
       limits,
       jobLimits,
       maxRequests:
-        limits.units * jobLimits.attempts * (jobLimits.retryRounds + 1),
+        config.maxProviderRequests,
       blocked,
       budget: modelBudget(config),
-      strategy: "下载并去重后，容量允许时一次图文合读；超限时分阶段阅读，再写一篇综合解读。不会静默抽样。",
+      strategy: "下载并去重后，将全部评论、商品资料与可读图片一次图文合读；容量超限时明确停止，不抽样或自动拆分。",
       ready: providerReady(config),
       provider: config.provider,
       model: config.model,
@@ -272,11 +227,11 @@ export async function createJob(userId, runId) {
     );
     if (!plan.units.length)
       await c.query(
-        "UPDATE ai_jobs SET state='completed',report=$2 WHERE id=$1",
+        "UPDATE ai_jobs SET state='failed',report=$2 WHERE id=$1",
         [
           id,
           {
-            schemaVersion:2,hasSynthesis:false,empty:true,partial:false,findings: [],
+            schemaVersion:config.schemaVersion,hasSynthesis:false,empty:true,partial:false,findings: [],
             generatedAt: new Date().toISOString(),
             mock: config.provider === "mock",
           },
@@ -334,54 +289,8 @@ export async function finalize(c, id) {
     ).rowCount
   )
     return;
-  if(job.config.schemaVersion===2) { const {finalizeReview}=await import('./ai-review-jobs.mjs'); return finalizeReview(c,job); }
-  const rows = (
-    await c.query(
-      "SELECT id,result FROM ai_units WHERE job_id=$1 AND state='done' ORDER BY id",
-      [id],
-    )
-  ).rows;
-  const findings = rows.flatMap((r) =>
-    (r.result?.findings || []).map((f, i) => ({ ...f, id: r.id + ":" + i })),
-  );
-  const aspectGroups = new Map();
-  for (const f of findings) {
-    if (!aspectGroups.has(f.aspect))
-      aspectGroups.set(f.aspect, { positive: [], negative: [] });
-    if (f.category === "strength") aspectGroups.get(f.aspect).positive.push(f);
-    if (f.category === "problem") aspectGroups.get(f.aspect).negative.push(f);
-  }
-  for (const [aspect, group] of aspectGroups) {
-    if (!group.positive.length || !group.negative.length) continue;
-    const sources = [...group.positive, ...group.negative];
-    findings.push({
-      id: "conflict:" + digest(aspect).slice(0, 16),
-      category: "conflict",
-      aspect,
-      title: "同一方面存在不同方向的证据",
-      body: "该方面同时被列为优势与问题，建议对照下方证据中的版本、日期和具体场景，不宜据此承诺统一体验。",
-      uncertainty:
-        "这是程序对经过校验的分批发现进行的交叉提示；需要阅读原文核对差异原因。",
-      priority: "medium",
-      comments: [...new Set(sources.flatMap((f) => f.comments))],
-      images: [...new Set(sources.flatMap((f) => f.images))],
-      quotes: [],
-    });
-  }
-  const counts = await coverage(id, c);
-  await c.query(
-    "UPDATE ai_jobs SET state='completed',report=$2,updated_at=now() WHERE id=$1",
-    [
-      id,
-      {
-        findings,
-        coverage: counts,
-        partial: !counts.complete,
-        mock: job.config.provider === "mock",
-        generatedAt: new Date().toISOString(),
-        method:
-          "全量分批证据报告；各发现仅针对所引用证据，不将分批观察扩写为全体结论。",
-      },
-    ],
-  );
+  // Stored legacy reports are read unchanged; only the v4 worker finalizes v4.
+  if(job.config.schemaVersion!==4)return;
+  const {finalizeReview}=await import('./ai-review-jobs.mjs');
+  return finalizeReview(c,job);
 }

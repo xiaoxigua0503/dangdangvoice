@@ -1,6 +1,6 @@
 import {pool} from './db.mjs';
-import {digest,numberEnv} from './ai-config.mjs';
-import {sourceQuality,partitionReview} from './ai-review.mjs';
+import {digest} from './ai-config.mjs';
+import {sourceQuality,budgetInput} from './ai-review.mjs';
 // Each download owns its connection, advisory lock and transaction. Never run
 // concurrent BEGIN/COMMIT statements on the worker's leased connection.
 export async function prepareReview(unit,downloadFn,signal) {
@@ -30,11 +30,13 @@ export async function prepareReview(unit,downloadFn,signal) {
  }));
  downloaded.sort((a,b)=>a.id.localeCompare(b.id));unread.sort((a,b)=>a.id.localeCompare(b.id));
  const unique=new Map();for(const i of downloaded){if(!unique.has(i.hash))unique.set(i.hash,{...i,aliases:[],comments:[],occurrences:[]});const rep=unique.get(i.hash);rep.aliases.push(i.id);rep.occurrences.push(...(i.occurrences||[]));rep.comments=[...new Set([...rep.comments,...i.comments])];}
- const quality=sourceQuality(unit.input.comments,downloaded);
- const scope={comments:unit.input.comments.length,substantive:unit.input.comments.filter(c=>!c.data.is_auto&&(c.data.text_full||c.data.text).trim().length>=12).length,defaults:quality.defaults.length,imageReferences:all.length,uniqueImages:unique.size,unreadImages:unread.length,siteTotal:unit.input.product.site?.total_comment_num??null,denominator:'本次保存快照的评论条目；图片数量按已有地址/成功下载哈希统计；不代表站点评价总量'};
- const chunks=partitionReview(unit.config,{schemaVersion:2,mode:'review',product:unit.input.product,scope,quality,unread},unit.input.parts,[...unique.values()]);
- if(chunks.length+2>numberEnv('AI_MAX_UNITS',2000))throw Object.assign(new Error('context_budget_exceeded'),{permanent:true});
- return {schemaVersion:2,scope,quality,unread,chunks,timings:{downloadAndPlanMs:Date.now()-started}};
+ let quality=null,qualityWarning=null;try{quality=sourceQuality(unit.input.comments,downloaded);}catch{qualityWarning='quality_diagnostics_unavailable';}
+ const scope={comments:unit.input.comments.length,substantive:unit.input.comments.filter(c=>!c.data.is_auto&&(c.data.text_full||c.data.text).trim().length>=12).length,defaults:unit.input.comments.filter(c=>c.data.is_auto).length,imageReferences:all.length,uniqueImages:unique.size,unreadImages:unread.length,siteTotal:unit.input.product.site?.total_comment_num??null,denominator:'本次保存快照的评论条目；图片数量按已有地址/成功下载哈希统计；不代表站点评价总量'};
+ const input={schemaVersion:4,product:unit.input.product,comments:unit.input.comments,parts:unit.input.parts,scope,unread,images:[...unique.values()].map(({bytes,mime,hash,...ref})=>ref)};
+ const budget=budgetInput(unit.config,input,[...unique.values()]);
+ // Capacity failure is explicit: retain ALL immutable sources and enqueue no
+ // provider work. Never sample or launch a hidden multi-stage synthesis.
+ return {schemaVersion:4,scope,quality,qualityWarning,unread,chunks:budget.fits?[{...input,budget}]:[],blocked:budget.fits?null:{code:budget.reason||'context_budget_exceeded',unprocessed:{comments:scope.comments,images:scope.uniqueImages}},budget,timings:{downloadAndPlanMs:Date.now()-started}};
 }
 export async function reviewImages(c,unit) {
  const refs=unit.input.images||[],images=[];
