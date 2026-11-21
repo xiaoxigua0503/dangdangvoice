@@ -63,7 +63,7 @@ const sections = [
   ["seller", "卖家优先行动"],
 ] as const;
 const states: Record<string, string> = {
-  queued: "等待 worker",
+  queued: "等待分析",
   running: "分析中",
   completed: "已结束",
   partial: "部分结果",
@@ -80,10 +80,10 @@ const errorText: Record<string, string> = {
   unsupported_evidence_claim: "结论超出可验证的图文证据",
   request_timeout: "处理超时",
   provider_timeout: "模型请求超时",
-  provider_network_error: "无法连接模型 API，请检查服务地址、网络或代理",
+  provider_network_error: "分析服务暂时无法连接，请稍后重试",
   provider_quota_exhausted: "模型账户余额或配额不足",
   image_timeout: "图片下载超时",
-  worker_error: "处理发生内部错误，请查看 worker 的阶段日志",
+  worker_error: "分析暂未完成，请稍后重试",
   unsupported_image_host: "图片地址不在允许的当当图片域名内",
   invalid_image_url: "图片地址无效或缺失",
   image_not_found: "图片不存在",
@@ -111,7 +111,7 @@ const errorText: Record<string, string> = {
 };
 function describeError(code:string) {
   const http=code.match(/^(provider|image)_http_(\d{3})$/);
-  return http ? `${http[1]==='image'?'图片下载':'模型 API'}返回 HTTP ${http[2]}` : errorText[code] || "处理未完成，请查看 worker 日志";
+  return http ? `${http[1]==='image'?'图片下载':'模型 API'}返回 HTTP ${http[2]}` : errorText[code] || "暂未完成处理，请稍后重试或联系管理员";
 }
 export function AIReport({
   user,
@@ -126,7 +126,7 @@ export function AIReport({
     [jobId, setJobId] = useState(()=>{const id=new URLSearchParams(location.search).get("aiJob")||"";return /^[a-f0-9-]{36}$/.test(id)?id:"";}),
     [job, setJob] = useState<Job | null>(null),
     [history, setHistory] = useState<
-      { id: string; run_id:string; pid:string; name:string; state: string; model: string }[]
+      { id: string; run_id:string; pid:string; name:string; state: string; model: string; created_at?:string; createdAt?:string }[]
     >([]),
     [msg, setMsg] = useState(""),
     [busy, setBusy] = useState(false),
@@ -137,6 +137,9 @@ export function AIReport({
     [evidence, setEvidence] = useState<any>(null);
   const [historyPage,setHistoryPage]=useState(1),[historyTotal,setHistoryTotal]=useState(0),[scope,setScope]=useState('all'),[refresh,setRefresh]=useState(0);
   const selected=useRef(jobId), intent=useRef(0);
+  const [historyError,setHistoryError]=useState('');
+  const evidenceDialog=useRef<HTMLDialogElement>(null);
+  useEffect(()=>{if(evidence)evidenceDialog.current?.showModal();},[evidence]);
   function choose(id:string) {const url=new URL(location.href);url.searchParams.set('aiJob',id);window.history.replaceState(null,'',url);intent.current++;selected.current=id;setJobId(id);setJob(null);setFindings([]);setTotal(0);setEvidence(null);setPage(1);setMsg('');setBusy(false);}
   const alive = useRef(true);
   const controller = useRef(new AbortController());
@@ -162,11 +165,11 @@ export function AIReport({
       try {
         const h=await api<{rows:typeof history;total:number}>(`/api/ai/jobs?page=${historyPage}${scope==='current'&&runId?'&runId='+runId:''}`,{signal:AbortSignal.any([c.signal,AbortSignal.timeout(15000)])});
         if(c.signal.aborted)return;
-        setHistory(h.rows);setHistoryTotal(h.total);
+        setHistory(h.rows);setHistoryTotal(h.total);setHistoryError('');
         // A new saved snapshot must never silently display a different product's report.
         const matching=runId?h.rows.find(row=>row.run_id===runId):h.rows[0];
         if(!selected.current&&matching)choose(matching.id);
-      }catch(e){if(!c.signal.aborted)setMsg('任务列表读取失败：'+(e as Error).message);}
+      }catch(e){if(!c.signal.aborted)setHistoryError('历史记录暂时加载失败，请重试');}
       if(!c.signal.aborted)timer=setTimeout(()=>void load(),8000);
     }
     void load();return()=>{c.abort();clearTimeout(timer);};
@@ -186,7 +189,7 @@ export function AIReport({
           timer = setTimeout(() => void tick(), 2500);
       } catch (e) {
         if (!c.signal.aborted) {
-          setMsg("任务状态读取失败："+(e as Error).message+"；正在重新连接，不会重复提交分析。");
+          setMsg("分析状态暂时无法读取，正在重新连接。");
           if(![401,403,404].includes((e as Error & {status?:number}).status||0))timer = setTimeout(() => void tick(), 5000);
         }
       }
@@ -293,80 +296,15 @@ export function AIReport({
       </section>
     );
   return (
-    <section className="ai-report" aria-label="AI 深度分析报告">
-      <header className="ai-report-heading"><p className="eyebrow">我的记录 / AI 解读</p><p>基于保存的评论与图片，辅助购买判断。</p></header>
-      {!runId && <p>当前没有选中的云端快照。可直接读取下方已保存任务；开始新的分析前，请先从云端历史恢复或保存完整记录。</p>}
-      {preview && (
-        <details className="ai-preflight" key={job?'selected-task':'new-analysis'} open={job?undefined:true}><summary>{job?'分析当前快照 / 读取已有报告':'生成商品综合解读'}</summary>
-          <b>
-            全量范围：{preview.comments} 条评论 · {preview.images} 个图片地址 ·{" "}
-            下载后核算图文合读容量
-          </b>
-          <p>{preview.notice}</p><p>{preview.strategy}</p>
-          <details><summary>数据处理与费用详情</summary>
-          {preview.missingImageReferences > 0 && (
-            <p className="ai-warning">
-              另有 {preview.missingImageReferences}{" "}
-              条晒图评论没有图片地址，实际图片总张数无法确定；这些线索会列为未覆盖，不会冒充已分析。
-            </p>
-          )}
-          {preview.sourceNotices?.map((n: string, i: number) => (
-            <p className="ai-warning" key={i}>
-              采集范围说明：{n}
-            </p>
-          ))}
-          <p>
-            每张图片最多 {Math.round(preview.limits.imageBytes / 1024 / 1024)}{" "}
-            MB，任务图片总量最多{" "}
-            {Math.round(preview.limits.totalImageBytes / 1024 / 1024)}{" "}
-            MB；不支持的地址、格式或下载失败会留下明确失败记录。下载后按内容哈希核对重复图片，唯一图片总数可能相应减少。
-          </p>
-          <p>
-            任务限制：每账户每日最多 {preview.jobLimits.daily}{" "}
-            个新任务，同时最多 {preview.jobLimits.active}{" "}
-            个任务。含全部自动与手动重试的理论请求上限为 {preview.maxRequests}{" "}
-            次，每次最多输出 {preview.jobLimits.maxOutputTokens}{" "}
-            token；实际费用取决于服务商计费和用量。
-          </p>
-          <p>
-            模型：{preview.model} ·{" "}
-            {preview.provider === "mock"
-              ? "本地 mock · 未执行真实 AI 推理"
-              : preview.provider}
-          </p>
-          </details>
-          <p>将发送到 {preview.model}；模型服务可能按实际用量计费。</p>
-          {preview.blocked ? (
-            <p role="alert">
-              容量超限或当前模型/端点的官方限制尚未核实，未启动。请管理员检查配置，不会抽样或暗中更换模型。
-            </p>
-          ) : !preview.ready ? (
-            <p role="alert">模型服务尚未配置密钥，未执行 AI 推理。</p>
-          ) : (
-            <button
-              className="go"
-              disabled={
-                busy || job?.state === "running" || job?.state === "queued"
-              }
-              onClick={() => void act("start")}
-            >
-              生成商品综合解读 / 读取已有报告
-            </button>
-          )}
-        </details>
-      )}
-      <details className="ai-history"><summary>切换任务与历史报告</summary>
-        <label>历史范围 <select aria-label="AI 历史范围" value={scope} onChange={e=>{setScope(e.target.value);setHistoryPage(1);}}><option value="all">我的全部商品与快照</option><option value="current">当前云端快照</option></select></label>
-        <label>已保存的 AI 任务
-          <select aria-label="已保存的 AI 任务" value={jobId} onChange={e=>choose(e.target.value)}>
-            {!jobId&&<option value="">请选择任务</option>}
-            {jobId&&!history.some(j=>j.id===jobId)&&<option value={jobId}>{job?.product.name||'所选任务'} · {job?statusLabel:'正在读取'} · {jobId.slice(0,8)}</option>}
-            {history.map(j=><option key={j.id} value={j.id}>#{j.pid} {j.name} · {j.id===jobId?statusLabel||states[j.state]:states[j.state]||j.state} · {j.id.slice(0,8)} · 快照 {j.run_id.slice(0,8)}</option>)}
-          </select>
-        </label>
-        <p>列表只显示当前账户拥有的任务；同一商品的不同快照分别保留。当前可启动快照：{runId?.slice(0,8)}。</p>
-        <div className="pager"><button className="ghost-btn" disabled={historyPage===1} onClick={()=>setHistoryPage(p=>p-1)}>上一页任务</button><span>{historyPage} 页 · {historyTotal} 个任务</span><button className="ghost-btn" disabled={historyPage*20>=historyTotal} onClick={()=>setHistoryPage(p=>p+1)}>下一页任务</button><button className="ghost-btn" onClick={()=>setRefresh(v=>v+1)}>刷新任务状态</button></div>
-      </details>
+    <section id="desk" className="ai-report" aria-label="AI 深度分析报告">
+      <header className="ai-report-heading"><p className="eyebrow">AI 深度分析</p></header>
+      {!job&&<><header className="ai-product-ribbon"><div><h2>{snapshotProduct?.name||'AI 综合解读'}</h2>{preview&&<p>本次待分析：{preview.comments} 条评论 · {preview.images} 个图片来源</p>}</div></header>{!runId&&<p>请在我的记录中打开一份分析，或保存当前结果。</p>}</>}
+      {preview&&!hasArticle&&<div className="ai-preflight">
+       {preview.missingImageReferences>0&&<p className="ai-warning">{preview.missingImageReferences} 条晒图评论缺少图片地址，无法读取对应图片。</p>}
+       {preview.sourceNotices?.map((n:string,i:number)=><p className="ai-warning" key={i}>{n}</p>)}
+       {preview.blocked?<p role="alert">当前数据超出可处理范围，请联系管理员。</p>:!preview.ready?<p role="alert">AI 服务暂未就绪，请稍后再试。</p>:<button className="go" disabled={busy||processing} onClick={()=>void act('start')}>生成 AI 解读</button>}
+      </div>}
+      {historyError&&<p className="ai-status-message" role="alert">{historyError} <button className="ghost-btn" onClick={()=>setRefresh(v=>v+1)}>重试</button></p>}
       {msg&&<p className="ai-status-message" role="status">{msg}</p>}
       {job && (
         <>
@@ -383,7 +321,9 @@ export function AIReport({
             ))}
           {['queued','running'].includes(job.state)&&<p className="ai-simple-progress" role="status">{job.state==='queued'?'正在等待读取数据':job.progress?.stage==='prepare'?'正在读取数据与图片':job.progress?.stage==='synthesis'?'正在写综合解读':'正在对照评论与图片'}{job.progress?.retrying?' · 正在恢复处理':''}</p>}
           {job.mock&&<p className="ai-warning">本地 mock 演示，未进行真实推理，不可作为购买依据。</p>}
-          <div className="ai-task-status"><span role="status">{statusLabel}</span>{processing&&<button className="ghost-btn" disabled={busy} onClick={()=>void act('cancel')}>停止处理</button>}{canRetry&&<button className="ghost-btn" disabled={busy} onClick={()=>void act('retry')}>重试失败 / 取消项</button>}</div>
+          <div className="ai-task-status"><span role="status">{statusLabel}</span>{processing&&<button className="ghost-btn" disabled={busy} onClick={()=>void act('cancel')}>停止处理</button>}{canRetry&&<button className="ghost-btn" disabled={busy} onClick={()=>void act('retry')}>重试分析</button>}</div>
+          {hasArticle&&<p className="ai-analysis-scope">本次分析：{job.coverage.comments.completed} 条评论 · {job.coverage.images.completed} 张图片</p>}
+          {(job.coverage.comments.completed<job.coverage.comments.total||job.coverage.images.completed<job.coverage.images.total)&&<p className="ai-warning">{hasArticle?'尚未完成分析':'待分析'}：{Math.max(0,job.coverage.comments.total-job.coverage.comments.completed)} 条评论 · {Math.max(0,job.coverage.images.total-job.coverage.images.completed)} 张图片。</p>}
           {modernReport&&<AIReviewArticle key={job.id+job.report?.generatedAt} jobId={job.id} report={job.report!} showEvidence={(kind,id)=>void showEvidence(kind,id)}/>}
           {!modernReport&&<article className="ai-review-article ai-report-placeholder"><header className="ai-article-header"><span className="ai-article-label">AI 综合解读</span><h2 className="ai-review-verdict">暂未生成综合解读</h2><p>{processing?'正在处理本次评论与图片，请稍候。':legacyReport?'这是一份早期证据报告，可继续阅读下方已保存内容。':'当前没有可显示的有效文章。原始数据与任务记录仍保留。'}</p></header></article>}
           {job.report && (job.report.schemaVersion||0)<2 && (
@@ -480,113 +420,23 @@ export function AIReport({
               </div>
             </article>
           )}
-          <details className="ai-coverage" key={job.id}><summary>分析范围与处理详情</summary>
-          {job.report&&<AIReviewScope report={job.report}/>}
-          {job.compatibleWorker===false&&<p>此任务使用旧管线或不同版本，当前 worker 不会接管。已保存报告仍可阅读；需要重新分析时，请从原快照显式创建新版本任务。</p>}
-          <p>任务 {job.id} · 快照 {job.runId} · 模型 {job.model}</p>
-            <h3>
-              {statusLabel} ·{" "}
-              {job.coverage.complete ? "结果已接受" : "结果尚未全部接受"}
-            </h3>
-            {job.progress && ["queued","running"].includes(job.state) && <p role="status">
-              待处理 {job.progress.pending} · 正在处理 {job.progress.running} · 等待重试 {job.progress.retrying}
-              {job.progress.next_retry_at && ` · 下次重试 ${new Date(job.progress.next_retry_at).toLocaleTimeString("zh-CN")}`}
-              {job.progress.latestError && ` · 最近错误：${describeError(job.progress.latestError)}`}
-              {job.progress.expired>0 && " · worker 租约已过期，等待恢复领取"}
-              {Date.now()-new Date(job.progress.last_activity_at || job.createdAt).getTime()>60000 && " · 已超过一分钟没有新结果，请检查 worker 是否启动、数据库一致及模型网络；任务可取消，已保存结果不会丢失。"}
-            </p>}
-            {job.mock && (
-              <p className="ai-warning">
-                本地 mock 测试报告，未进行真实文本或图片推理，不可作为购买依据。
-              </p>
-            )}
-            {job.report && (!job.coverage.complete || job.report.partial) && (
-              <p className="ai-warning">
-                {job.report.hasSynthesis?"部分解读：尚有未被接受的结果。":"未生成可接受的综合解读；原始评论和已下载图片仍保留。"}
-              </p>
-            )}
-            {job.coverage.images.missingReferences ? (
-              <p className="ai-warning">
-                有 {job.coverage.images.missingReferences}{" "}
-                条晒图线索缺少图片地址，实际图片总数无法确定。下方只统计已提供图片条目。
-              </p>
-            ) : null}
-            <p>图片已下载 {job.delivery?.downloaded ?? "未统计"} 张；模型返回确认接收的单次最大范围：{job.delivered?.comments ?? 0} 条评论、{job.delivered?.images ?? 0} 张图片；已发出请求 {job.providerRequests ?? 0} 次。下方为结果校验接受范围，输出被拒绝不代表源数据损坏。</p>
-            <dl>
-              {[
-                ["评论", job.coverage.comments],
-                ["去重图片", job.coverage.images],
-                ["处理单元", job.coverage.units],
-              ].map(([name, value]) => {
-                const v = value as Count;
-                return (
-                  <div key={name as string}>
-                    <dt>{name as string}</dt>
-                    <dd>
-                      {v.completed} / {v.total} 结果接受 · {v.failed} 未接受/取消
-                    </dd>
-                  </div>
-                );
-              })}
-            </dl>
-            <progress
-              value={job.coverage.units.completed + job.coverage.units.failed}
-              max={Math.max(1, job.coverage.units.total)}
-            />
-            <p>
-              模型：{job.model} · 分析时间：
-              {job.report
-                ? new Date(job.report.generatedAt).toLocaleString("zh-CN")
-                : "进行中"}{" "}
-              · 处理尝试 {job.usage.attempts} 次 · 缓存命中{" "}
-              {job.usage.cache_hits} 次 · 已记录输入/输出 token：
-              {job.usage.prompt_tokens} / {job.usage.completion_tokens}
-            </p>
-            <p>
-              恢复历史报告不会重新调用模型。重试只处理未成功的单元，可能新增服务费用。退出登录不会自动取消后台任务；如需停止处理，请先取消任务。
-            </p>
-          {job.report?.timings&&<p>累计尝试耗时：{job.report.timings.map(t=>`${t.kind} ${(Number(t.ms)/1000).toFixed(1)} 秒`).join(' · ')}；总历时 {((job.report.totalMs||0)/1000).toFixed(1)} 秒（含排队/重试）。</p>}
-          {job.errorsTotal > 0 && (
-            <details>
-              <summary>查看失败项（{job.errorsTotal} 项）</summary>
-              <p>下方最多列出 100 项，覆盖计数包含全部失败项。</p>
-              {job.failures.map((f) => (
-                <p key={f.id}>
-                  {f.kind === "image" ? "图片" : "文本"}：
-                  {describeError(f.error)}{" "}
-                  {f.comment_ids.map((id) => (
-                    <button
-                      className="chip"
-                      key={id}
-                      onClick={() => void showEvidence("comment", id)}
-                    >
-                      {id}
-                    </button>
-                  ))}
-                </p>
-              ))}
-            </details>
-          )}
+          <details className="ai-coverage" key={job.id}><summary>报告信息</summary>
+           {job.report&&<AIReviewScope report={job.report}/>}
+           <p>模型：{job.report?.actualModel||job.model} · {job.report?new Date(job.report.generatedAt).toLocaleString('zh-CN'):new Date(job.createdAt).toLocaleString('zh-CN')}</p>
+           {!!job.coverage.images.missingReferences&&<p>{job.coverage.images.missingReferences} 条晒图线索缺少图片地址，实际图片总量无法确定。</p>}
+           {job.errorsTotal>0&&<p>部分内容未完成处理。{[...new Set(job.failures.map(f=>describeError(f.error)))].join('；')}</p>}
+           {job.compatibleWorker===false&&<p>此任务版本较早，已保存的报告仍可阅读；需要重新分析时，请从原记录创建。</p>}
           </details>
           {evidence && (
-            <aside className="ai-evidence" role="dialog" aria-label="原始证据" tabIndex={-1} onKeyDown={e=>{if(e.key==='Escape')setEvidence(null);}}>
+            <dialog ref={evidenceDialog} className="ai-evidence" aria-label="原始证据" onCancel={()=>setEvidence(null)} onClick={e=>{if(e.target===e.currentTarget)setEvidence(null);}}>
               <button className="ghost-btn" autoFocus onClick={() => setEvidence(null)}>
                 关闭证据
               </button>
               {evidence.metadata&&<><h3>商家资料 · 尚未核实</h3><p className="ai-source-text">{evidence.metadata.text}</p></>}
               {evidence.comment && (
                 <>
-                  <h3>
-                    评论 {evidence.comment.id} · 原评论编号{" "}
-                    {evidence.comment.source_id || "未提供"}
-                  </h3>
-                  <p>评分 {evidence.comment.data.score ?? "未提供"} · {evidence.comment.data.date || "日期未提供"} · {evidence.comment.data.variant || "版本未提供"}{evidence.comment.data.is_auto?" · 默认评价":""}</p><p className="ai-source-text">{evidence.comment.data.text}</p>
-                  {evidence.comment.data.text_full !==
-                    evidence.comment.data.text && (
-                    <p className="ai-source-text">
-                      {evidence.comment.data.text_full}
-                    </p>
-                  )}
+                  <h3>原始评论</h3>
+                  <p>{[evidence.comment.data.score!=null?`评分 ${evidence.comment.data.score}`:null,evidence.comment.data.date,evidence.comment.data.variant,evidence.comment.data.is_auto?'默认评价':null].filter(Boolean).join(' · ')}</p><p className="ai-source-text">{evidence.comment.data.text_full||evidence.comment.data.text}</p>
                   {/^https:\/\/comment\.dangdang\.com\//.test(
                     evidence.comment.data.detail_url || "",
                   ) && (
@@ -644,11 +494,23 @@ export function AIReport({
                   ))}
                 </>
               )}
-            </aside>
+            </dialog>
           )}
         </>
       )}
-      <p className="ai-reading-footnote">AI 内容供参考，可打开原始证据核对。图片不能作为真伪证明。</p>
+      <details className="ai-history"><summary>AI 历史报告</summary>
+        <label>历史范围 <select aria-label="AI 历史范围" value={scope} onChange={e=>{setScope(e.target.value);setHistoryPage(1);}}><option value="all">我的全部商品与快照</option><option value="current">当前云端快照</option></select></label>
+        <label>已保存的 AI 任务
+          <select aria-label="已保存的 AI 任务" value={jobId} onChange={e=>choose(e.target.value)}>
+            {!jobId&&<option value="">请选择任务</option>}
+            {jobId&&!history.some(j=>j.id===jobId)&&<option value={jobId}>{job?.product.name||'所选任务'} · {job?statusLabel:'正在读取'}</option>}
+            {history.map(j=><option key={j.id} value={j.id}>#{j.pid} {j.name} · {j.id===jobId?statusLabel||states[j.state]:states[j.state]||j.state}{j.created_at||j.createdAt?` · ${new Date((j.created_at||j.createdAt)!).toLocaleString('zh-CN')}`:''}</option>)}
+          </select>
+        </label>
+
+        <div className="pager"><button className="ghost-btn" disabled={historyPage===1} onClick={()=>setHistoryPage(p=>p-1)}>上一页任务</button><span>{historyPage} 页 · {historyTotal} 个任务</span><button className="ghost-btn" disabled={historyPage*20>=historyTotal} onClick={()=>setHistoryPage(p=>p+1)}>下一页任务</button><button className="ghost-btn" onClick={()=>setRefresh(v=>v+1)}>刷新任务状态</button></div>
+      </details>
+      <p className="ai-reading-footnote">AI 解读仅供参考，可查看原始评论与图片核对。</p>
     </section>
   );
 }

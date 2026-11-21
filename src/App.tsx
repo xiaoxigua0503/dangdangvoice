@@ -37,7 +37,7 @@ const STAGES = [
   { key: "done", zh: "洞察出炉", en: "insights" },
 ];
 
-const egrText = (s: string) => (s === "clear" ? "畅通" : s === "waf" ? "被风控" : "未测");
+
 const relayIssue = (code?:string) => code==='upstream_timeout' ? '连接当当超时' : code==='upstream_network_error' ? '服务器无法连接当当' : code?.startsWith('upstream_http_') ? `当当返回 HTTP ${code.slice(-3)}` : '被风控';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const rnd = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
@@ -540,61 +540,29 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
               <svg className="bell b1"><use href="#ico-bell" /></svg>
               <svg className="bell b2"><use href="#ico-bell" /></svg>
             </span>
-            <span className="brand-txt"><b>当当之声</b><i>DANGDANGVOICE · PAGES</i></span>
+            <span className="brand-txt"><b>当当之声</b><i>评论分析与购买参考</i></span>
           </a>
-          <nav className="mast-nav"><a href="#desk" onClick={()=>{const u=new URL(location.href);u.searchParams.delete('aiJob');window.history.replaceState(null,'',u);setAnalysisTab('basic');}}>基础分析</a><a href="#desk" onClick={()=>user?.plan==='pro'?setAnalysisTab('ai'):setUpgrade(true)}>AI 深度分析</a>
-            <a href="#collect">采集</a><a href="#flow">工序</a><a href="#desk" onClick={()=>setAnalysisTab("basic")}>声纹台</a><a href="#lib">我的记录</a>
+          <nav className="mast-nav" aria-label="主导航"><a href="#collect" onClick={()=>setAnalysisTab("basic")}>采集</a><a href="#desk" onClick={()=>{const u=new URL(location.href);u.searchParams.delete('aiJob');window.history.replaceState(null,'',u);setAnalysisTab('basic');}}>基础分析</a><a href="#desk" onClick={()=>user?.plan==='pro'?setAnalysisTab('ai'):setUpgrade(true)}>AI 深度分析</a>
+            <a href="#lib">我的记录</a>
           </nav>
-          <span className="mast-tag">评论即声音 · Comment as Sound</span>
+          <Account user={user} onChange={u=>{changeUser(u);onSessionChange(u);}} open={accountOpen} setOpen={setAccountOpen}>{accountOpen&&ownerGateLocked&&<section className="account-panel"><p>管理员额外限制：实时采集需站点口令（与个人账户无关）。</p><form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{await postJson('/api/session',{passphrase:f.get('passphrase')});setUnlockedNow(true);setGateInfo({gated:true,unlocked:true});setGateError('站点口令已通过');gateRequirementRef.current=false;if(pendingTask.current){const task=pendingTask.current;pendingTask.current=null;task();}}catch(e){setGateError((e as Error).message);}}}><input name="passphrase" type="password" required aria-label="站点采集口令"/><button className="ghost-btn">验证站点口令</button></form><p role="status">{gateError}</p></section>}</Account>
         </div>
       </header>
 
-      <Account user={user} onChange={u=>{changeUser(u);onSessionChange(u);}} open={accountOpen} setOpen={setAccountOpen}/>
-      {accountOpen&&ownerGateLocked&&<section className="account-panel"><p>管理员额外限制：实时采集需站点口令（与个人账户无关）。</p><form onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);try{await postJson('/api/session',{passphrase:f.get('passphrase')});setUnlockedNow(true);setGateInfo({gated:true,unlocked:true});setGateError('站点口令已通过');gateRequirementRef.current=false;if(pendingTask.current){const task=pendingTask.current;pendingTask.current=null;task();}}catch(e){setGateError((e as Error).message);}}}><input name="passphrase" type="password" required aria-label="站点采集口令"/><button className="ghost-btn">验证站点口令</button></form><p role="status">{gateError}</p></section>}
-      <section className="account-panel"><button className="ghost-btn" onClick={()=>void showSample()}>查看示例数据（已标注来源）</button><p role="status">{cloudStatus}</p>{product&&<button className="ghost-btn" onClick={()=>{const v=pendingSave.current;if(v&&v.product===product&&v.owner===ownerRef.current?.id&&v.epoch===accountEpoch.current)void saveCloud(v.product,v.comments,ownerRef.current,v.epoch,v.key);else void saveCloud(product,comments,ownerRef.current,accountEpoch.current);}}>保存当前结果 / 重试云端保存</button>}</section>
-        <section id="top" className="hero">
+
+
+        <section id="top" className="hero" hidden={analysisTab==='ai'}>
           <div className="hero-in">
             <div className="hero-copy">
-              <p className="eyebrow">BOOKSELLER REVIEW FORENSICS · 图书电商评论透视</p>
-              <h1 className="serif">把当当的商品页，<br />调成一段<span className="hl-snd">可听的声纹</span>。</h1>
-              <p className="lede">粘贴任意当当商品链接 —— 当当之声由<b>浏览器逐页编排</b>、云端无状态中继抓取列表与全文，
-                本地词典情感引擎拆穿「好评率」。每段结果同步存入你的浏览器，实例换代也能瞬间找回。</p>
-              <div className="status-strip" role="status">
-                <span className={`st-pill ${channel.list}`}>列表通道 {egrText(channel.list)}</span>
-                <span className={`st-pill ${channel.detail}`}>详情通道 {egrText(channel.detail)}</span>
-                <span className="st-note">浏览器编排 · 服务端无作业状态 · 风控拦页自动逐级重试 · 档案存本地。</span>
-              </div>
-              {!product && archive.length > 0 && (
-                <div className="quick-archive" role="region" aria-label="浏览器档案快捷恢复">
-                  <p className="qa-h">🗂 浏览器档案 · 离线瞬间找回</p>
-                  {archive.slice(0, 3).map((e) => (
-                    <div key={e.product.pid} className="qa-row">
-                      <button type="button" onClick={() => {cloudDesk.current=false;void restoreArchive(e);}}>
-                        <b>{(e.product.name || e.product.pid).slice(0, 26)}</b>
-                        <span className="mono"> · {e.comments.length} 条 · {new Date(e.savedAt).toLocaleDateString("zh-CN")}</span>
-                      </button>
-                      <button type="button" className="hp-del" title="删除本地档案"
-                        onClick={() => setArchive(archiveRemove(e.product.pid))}>×</button>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <p className="eyebrow">当当之声</p><h1 className="serif">读懂评论，<br/>再做购买决定。</h1><p className="lede">粘贴当当商品链接，查看评论分析与 AI 图文解读。</p>
             </div>
 
             <form id="collect" className="catalog" onSubmit={(e) => { e.preventDefault(); submitTask(url, maxPages, maxDetails); }}>
-              <div className="cat-head">
-                <span className="cat-no">NO. <b>{(pidHint || "0000").slice(-4)}</b></span>
-                <span className="cat-stamp">投递口 / INTAKE</span>
-              </div>
-              <label className="cat-label" htmlFor="url">商品网址 — Product URL</label>
+              <label className="cat-label" htmlFor="url">商品链接或编号</label>
               <input id="url" value={url} spellCheck={false} autoComplete="off"
                 onChange={(e) => { setUrl(e.target.value); setCollectErr(""); }}
                 placeholder="https://product.dangdang.com/30049142.html" />
-              <p className="cat-help">
-                {pidHint
-                  ? <>✓ 识别到商品编号 <b className="mono">{pidHint}</b> — product / www / item / m 站点与纯编号都可</>
-                  : "支持 product.dangdang.com/{id}.html、m.dangdang.com/product.php?product_id=… 或直接粘贴编号"}
-              </p>
+              <p className="cat-help">{pidHint?`已识别商品编号 ${pidHint}`:"支持当当商品链接或商品编号"}</p>
               <div className="cat-row">
                 <label>翻阅页数 <output>{maxPages === 37 ? "全部(≤37)" : `${maxPages} 页`}</output>
                   <input type="range" min={1} max={37} value={maxPages} onChange={(e) => setMaxPages(+e.target.value)} />
@@ -605,16 +573,16 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
               </div>
               <button className="go" type="submit" disabled={hot}>
                 <svg className="go-wave"><use href="#ico-wave" /></svg>
-                {hot ? "正在听…" : "开始听 — Collect & Analyze"}
+                {hot ? "正在采集…" : "采集并分析"}
               </button>
               {hot && (
                 <button className="ghost-btn stop-btn" type="button"
                   onClick={() => { cancelRef.current = true; }}>停止本轮</button>
               )}
-              <p className="go-note">礼貌限速 · 通道被占自动排队重试 · 结果即时存入浏览器档案</p>
+              <button className="sample-action" type="button" onClick={()=>void showSample()}>查看示例</button>
               {queuePanel && (
                 <div className="queue-box" role="status">
-                  <p className="qb-h">⏳ 自动重试队列（关页面也不丢，回来继续跑）</p>
+                  <p className="qb-h">等待重试</p>
                   {visibleQueue.map((t) => (
                     <div key={t.pid} className="qb-row">
                       <span className="mono">#{t.pid}</span>
@@ -630,7 +598,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
               {collectErr && <p className="cat-err" role="alert">✗ {collectErr}</p>}
 
               <details className="import-box">
-                <summary>导入模式 — 桌面版 CSV / 完整档案 JSON（离线分析）</summary>
+                <summary>导入数据</summary>
                 <input type="file" accept=".csv,.json,.txt" onChange={async (ev) => {
                   const f = ev.target.files?.[0];
                   if (!f) return;
@@ -648,16 +616,14 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
         </section>
 
         {(job || applog.length > 0) && (
-          <section id="flow" className="flow" aria-live="polite">
+          <section id="flow" className="flow" aria-live="polite" hidden={analysisTab==='ai'&&!hot&&job?.status!=='error'}>
             <div className="flow-in">
-              <div className="flow-title">
-                <h2 className="serif">{job && hot ? "声纹正在成形" : job && job.status === "done" ? "本轮日志 · 已完成" : "声纹日志"} <i className="mono">{job?.status === "running" ? runPid || "" : ""}</i></h2>
+              {(hot||job?.status==="error")&&<div className="flow-title">
+                <h2 className="serif">{hot?"正在采集与分析":job?.status==="error"?"采集未完成":"采集进度"}</h2>
                 {job && hot && <button className="ghost-btn" onClick={() => { cancelRef.current = true; }}>停止</button>}
-                {applog.length > 0 && (!job || job.status !== "running") && (
-                  <button className="ghost-btn" onClick={() => { setApplog([]); try { sessionStorage.removeItem(["ddv", "log", "v1"].join("-")); } catch { /* ignore */ } }}>清空日志</button>
-                )}
-              </div>
-              {job && (
+
+              </div>}
+              {job && (hot||job.status==="error") && (
                 <>
                   <ol className="stages">
                     {STAGES.map((stg, i) => {
@@ -677,11 +643,14 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
                   {job.error && <p className="cat-err" role="alert">✗ {job.error}</p>}
                 </>
               )}
-              <pre className="tail mono">{applog.slice(0, 9).reverse().join("\n")}</pre>
+              <details className="collection-details"><summary>采集详情</summary>                {applog.length > 0 && (!job || job.status !== "running") && (
+                  <button className="ghost-btn" onClick={() => { setApplog([]); try { sessionStorage.removeItem(["ddv", "log", "v1"].join("-")); } catch { /* ignore */ } }}>清空日志</button>
+                )}<pre className="tail mono">{applog.slice(0, 9).reverse().join("\n")}</pre><button className="ghost-btn" type="button" onClick={() => { resetCookies(); setChannel({ list: "unknown", detail: "unknown" }); }}>重置中继会话</button></details>
             </div>
           </section>
         )}
 
+        {product&&<div className="result-toolbar"><span role="status" title={cloudStatus}>{cloudStatus.startsWith('正在保存')?'保存中':cloudStatus.startsWith('已保存')?'已保存':cloudStatus.startsWith('云端保存失败')?'保存失败':cloudStatus.startsWith('已恢复')?cloudStatus:'仅保存在设备'}</span><button className="ghost-btn" onClick={()=>{const v=pendingSave.current;if(v&&v.product===product&&v.owner===ownerRef.current?.id&&v.epoch===accountEpoch.current)void saveCloud(v.product,v.comments,ownerRef.current,v.epoch,v.key);else void saveCloud(product,comments,ownerRef.current,accountEpoch.current);}}>{cloudStatus.startsWith('云端保存失败')?'重试保存':'保存当前结果'}</button></div>}
         <nav className="analysis-tabs" aria-label="分析模式"><button className={`chip ${analysisTab==='basic'?'on':''}`} onClick={()=>setAnalysisTab('basic')}>基础分析</button><button className={`chip ${analysisTab==='ai'?'on':''}`} onClick={()=>user?.plan==='pro'?setAnalysisTab('ai'):setUpgrade(true)}>AI 深度分析</button></nav>
         {analysisTab==='basic'&&product && <Desk product={product} comments={comments} listeningPid={runPid && runPid !== product.pid ? runPid : null} />}
         {analysisTab==='ai'&&<AIReport key={`${user?.id}:${user?.plan}:${cloudRun?.product===product?cloudRun.id:'none'}`} user={user} snapshotProduct={cloudRun?.product===product&&cloudRun?.owner===user?.id?product:null} runId={cloudRun?.product===product&&cloudRun?.owner===user?.id?cloudRun.id:null}/> }
@@ -689,11 +658,12 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
         {(archive.length > 0 || product || user) && (
           <section id="lib" className="lib">
             <div className="lib-in">
-              <p className="eyebrow">COMMENT LIBRARY · 评论记录库 — 所有采集过的商品</p>
-              {user&&<CloudHistory key={user.id} user={user} onOpen={e=>{cloudDesk.current=true;void restoreArchive(e);}} onCopy={()=>void copyLocalArchives()}/>}
-              <h3>本浏览器记录（仅此设备）</h3>
+              <p className="eyebrow">我的记录</p>
+              {user&&<CloudHistory key={user.id} user={user} onOpen={e=>{cloudDesk.current=true;void restoreArchive(e);}}/>}
+              <details className="device-data"><summary>设备数据</summary><p>仅此设备可见，可手动复制到当前账户。</p><button className="ghost-btn" disabled={!user?.verified} onClick={()=>void copyLocalArchives()}>复制设备记录到账户</button>
+              {!!archive.length&&<div className="device-exports">{archive.map(entry=><div className="device-entry" key={entry.product.pid}><span>{entry.product.name||entry.product.pid}</span><details className="export-menu"><summary>导出</summary>{(['csv','json'] as const).map(format=><button className="chip" key={format} onClick={()=>{const text=format==='csv'?buildCsvLocal(entry.product.pid,entry.product.name||'',entry.comments):buildPayloadJson(entry.product,entry.comments);const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([text],{type:format==='csv'?'text/csv;charset=utf-8':'application/json'}));link.download=`dangdangvoice_${entry.product.pid}.${format}`;link.click();URL.revokeObjectURL(link.href);}}>{format.toUpperCase()}</button>)}</details><details className="record-more"><summary>更多</summary><button className="chip" onClick={()=>{if(confirm('确定删除这份设备记录？'))setArchive(archiveRemove(entry.product.pid));}}>删除设备记录</button></details></div>)}</div>}
               <Library entries={archive} currentPid={product ? product.pid : null}
-                onOpen={(e) => {cloudDesk.current=false;void restoreArchive(e);}} />
+                onOpen={(e) => {cloudDesk.current=false;void restoreArchive(e);}} /></details>
             </div>
           </section>
         )}
@@ -705,7 +675,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
               <svg className="bell"><use href="#ico-bell" /></svg>
               <b>当当之声 dangdangvoice</b>
             </div>
-            <p>浏览器编排 · 无状态中继 · 本地词典 + 星级引擎（可离线复现）· 持久 = 你的浏览器档案 + CSV/JSON 导出。</p>
+
             {product && (
               <div className="foot-dl">
                 <button className="dl" type="button" onClick={() => {
@@ -721,7 +691,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
                   a.download = `dangdangvoice_${product.pid}_archive.json`; a.click(); URL.revokeObjectURL(a.href);
                 }}>⬇ 完整档案 JSON</button>
                 <button className="dl ghost" type="button" onClick={() => setReport((v) => !v)}>⎋ 文本速览</button>
-                <button className="dl ghost" type="button" onClick={() => { resetCookies(); setChannel({ list: "unknown", detail: "unknown" }); }}>↻ 重置中继会话</button>
+
               </div>
             )}
             {report && product && <pre className="report mono">{reportText(product)}</pre>}

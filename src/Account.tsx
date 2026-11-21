@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { api, postJson, buildCsvLocal } from "./api";
+import type {ReactNode} from "react";
 import type { ArchiveEntry } from "./api";
 export interface User {
   id: string;
@@ -9,10 +10,22 @@ export interface User {
   role?: "user" | "admin";
   proExpiresAt?: string|null;
 }
-export function Account({user,onChange,open,setOpen}:{user:User|null;onChange:(u:User|null)=>void;open:boolean;setOpen:(v:boolean)=>void}) {
+export function Account({user,onChange,open,setOpen,children}:{user:User|null;onChange:(u:User|null)=>void;open:boolean;setOpen:(v:boolean)=>void;children?:ReactNode}) {
  const [msg,setMsg]=useState('');
- return <section className="account-panel" id="account"><div className="account-line"><b>我的账户</b><small className="plan-badge">{user?.plan==='pro'?'Pro':'Free'}</small><span>{user?.email} · {user?.verified?'邮箱已验证':'邮箱待验证'}</span><button className="ghost-btn" onClick={()=>setOpen(!open)}>账户设置</button></div>{open&&<div className="account-form">{user?.role==='admin'&&<a href="/admin">管理后台</a>}<a href="/forgot-password">重置密码</a>{!user?.verified&&<a href="/verify-email">验证邮箱</a>}<button className="ghost-btn" onClick={async()=>{try{await postJson('/api/auth/logout',{});onChange(null);new BroadcastChannel('ddv-account-changed').postMessage({changed:true});location.replace('/login');}catch(e){setMsg((e as Error).message);}}}>退出登录</button><p role="status">{msg}</p></div>}</section>;
+ const root=useRef<HTMLDivElement>(null),trigger=useRef<HTMLButtonElement>(null);
+ useEffect(()=>{
+  if(!open)return;
+  const outside=(e:PointerEvent)=>{if(!root.current?.contains(e.target as Node))setOpen(false);};
+  const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'){setOpen(false);trigger.current?.focus();}};
+  document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
+  return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
+ },[open,setOpen]);
+ return <div className="header-account" id="account" ref={root} onBlur={e=>{if(e.relatedTarget&&!e.currentTarget.contains(e.relatedTarget as Node))setOpen(false);}}>
+  {user?<><button ref={trigger} className="account-trigger" aria-label="账户设置" aria-expanded={open} aria-controls="account-dropdown" onClick={()=>setOpen(!open)}><span aria-hidden="true">◉</span><small>{user.plan==='pro'?'Pro':'Free'}</small></button>
+  {open&&<div className="account-dropdown" id="account-dropdown"><b>账户设置</b><p className="account-email">{user.email}</p><p>{user.verified?'邮箱已验证':'邮箱待验证'} · {user.plan==='pro'?'Pro 会员':'Free 套餐'}</p>{user.proExpiresAt&&<p>有效期至 {new Date(user.proExpiresAt).toLocaleDateString('zh-CN')}</p>}{user.role==='admin'&&<a href="/admin">管理后台</a>}<a href="/forgot-password">重置密码</a>{!user.verified&&<a href="/verify-email">验证邮箱</a>}<button className="ghost-btn" onClick={async()=>{try{await postJson('/api/auth/logout',{});onChange(null);new BroadcastChannel('ddv-account-changed').postMessage({changed:true});location.replace('/login');}catch(e){setMsg((e as Error).message);}}}>退出登录</button>{msg&&<p role="status">{msg}</p>}{children}</div>}</>:<div className="account-guest"><a href="/login">登录</a><a href="/register">注册</a></div>}
+ </div>;
 }
+
 interface CloudRow {
   id: string;
   pid: string;
@@ -24,11 +37,9 @@ interface CloudRow {
 export function CloudHistory({
   user,
   onOpen,
-  onCopy,
 }: {
   user: User;
   onOpen: (e: ArchiveEntry) => void;
-  onCopy: () => void;
 }) {
   const [q, setQ] = useState(""),
     [source, setSource] = useState(""),
@@ -95,11 +106,8 @@ export function CloudHistory({
   }
   return (
     <section className="cloud-history">
-      <h3>云端历史 · {user.email}</h3>
-      <p>仅当前账户可见；本浏览器档案在下方单独展示，不会自动上传。</p>
-      <button className="ghost-btn" disabled={!user.verified} onClick={onCopy}>
-        将本浏览器档案复制到此账户
-      </button>
+      <h3>云端历史</h3>
+
       <div className="lib-filter">
         <label>
           搜索商品或评论
@@ -141,14 +149,12 @@ export function CloudHistory({
           </div>
           <div className="chips">
             <button className="chip" onClick={() => void load(r.id)}>
-              恢复声纹台
+              打开分析
             </button>
-            <button className="chip" onClick={() => void load(r.id, "csv")}>
-              CSV
-            </button>
+            <details className="export-menu"><summary>导出</summary><button className="chip" onClick={() => void load(r.id, "csv")}>CSV</button>
             <button className="chip" onClick={() => void load(r.id, "json")}>
               完整 JSON
-            </button>
+            </button></details><details className="record-more"><summary>更多</summary>
             <button
               className="chip"
               onClick={async () => {
@@ -165,8 +171,8 @@ export function CloudHistory({
                 }
               }}
             >
-              删除
-            </button>
+              删除记录
+            </button></details>
           </div>
         </article>
       ))}

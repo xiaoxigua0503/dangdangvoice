@@ -258,7 +258,7 @@ export function archiveRemove(pid: string): ArchiveEntry[] {
   try { localStorage.setItem(ARCHIVE_KEY, JSON.stringify(list)); } catch { /* ignore */ }
   return list;
 }
-export function buildPayloadJson(product: Product, comments: CommentRow[]): string {
+export function buildPayloadJson(product: ArchivedProduct, comments: CommentRow[]): string {
   return JSON.stringify({ dangdangvoice: 1, exportedAt: new Date().toISOString(), product, comments }, null, 1);
 }
 

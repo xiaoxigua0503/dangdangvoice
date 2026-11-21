@@ -18,7 +18,7 @@ export function Desk({ product: p, comments, listeningPid }: { product: Product;
             ? <img id="p-img" src={p.image} alt="商品图" referrerPolicy="no-referrer" />
             : <div id="p-img" aria-hidden="true" className="img-fallback">书</div>}
           <div className="p-meta">
-            <p className="eyebrow">ANALYZED PRODUCT · 本期声纹 <span className={`src-tag ${p.source}`}>{p.source === "import" ? "导入数据" : p.source === "sample" ? "真实样例 · 内置" : p.source === "browser" ? "浏览器直接抓取" : "在线采集 · 云中继"}</span></p>
+            <p className="eyebrow">商品分析 <span className={`src-tag ${p.source}`}>{p.source === "import" ? "导入数据" : p.source === "sample" ? "内置样例" : p.source === "browser" ? "浏览器直接抓取" : "在线采集"}</span></p>
             <h2 className="serif">{p.name || `商品 ${p.pid}`}</h2>
             <p className="p-sub">
               <span className="mono">{p.price ? `当当价 ${p.price}` : ""}</span>
@@ -43,22 +43,22 @@ export function Desk({ product: p, comments, listeningPid }: { product: Product;
 
         <div className="grid2">
           <section className="panel reveal in">
-            <p className="eyebrow">THEMES · 大家到底在聊什么</p>
+            <p className="eyebrow">大家到底在聊什么</p>
             <Themes a={a} />
           </section>
           <section className="panel reveal in">
-            <p className="eyebrow">KEYWORDS · 高频词谱</p>
+            <p className="eyebrow">高频词谱</p>
             <Keywords a={a} />
           </section>
         </div>
 
         <div className="grid2">
           <section className="panel reveal in">
-            <p className="eyebrow">RATING SHAPE · 分数形状</p>
+            <p className="eyebrow">分数形状</p>
             <Hist a={a} />
           </section>
           <section className="panel reveal in">
-            <p className="eyebrow">EDITIONS & MOOD · 版本口碑 / 近期风向</p>
+            <p className="eyebrow">版本口碑 / 近期风向</p>
             <VariantsTrend a={a} />
           </section>
         </div>
@@ -78,7 +78,7 @@ export function Desk({ product: p, comments, listeningPid }: { product: Product;
           <Advice a={a} />
         </div>
 
-        <p className="engine-tag mono">engine: {a.engine || "lexicon-blend"} · 无外部 AI 调用</p>
+
       </div>
     </main>
   );

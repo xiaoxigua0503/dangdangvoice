@@ -58,7 +58,7 @@ export function Library({ entries, currentPid, onOpen }: {
 
   return (
     <div className="library">
-      <p className="lib-banner">数据源＝本浏览器档案库：每次采集/导入自动入库，离线可用；这里仅显示本设备记录；登录后的云端历史单独显示，可手动复制本地档案到当前账户。</p>
+
       <div className="lib-stats mono">{entries.length} 个商品 · {rows.length} 条评论记录 · 当前命中 <b>{filtered.length}</b> 条</div>
       <div className="lib-filter">
         <label>关键词<input className="q" type="search" placeholder="评论内容，如：印刷 / 物流 / 安东尼"
@@ -124,7 +124,7 @@ export function Library({ entries, currentPid, onOpen }: {
       </div>
       {entries.length > 0 && (
         <div className="lrec-entrylist">
-          <p className="pop-h">入库商品（点击回到该商品声纹台）</p>
+          <p className="pop-h">设备中的商品 · 点击打开分析</p>
           <div className="entrychips">
             {entries.map((e) => (
               <span key={e.product.pid} className="enchip">

@@ -18,7 +18,7 @@ export function Gauge({ a }: { a: Analysis }) {
   const verdict = pulse >= 72 ? "值得入手" : pulse >= 55 ? "看需求" : pulse >= 40 ? "谨慎" : "先避一避";
   return (
     <div className="gauge-box">
-      <p className="eyebrow">BUYER PULSE · 购买脉搏指数</p>
+      <p className="eyebrow">购买脉搏指数</p>
       <svg viewBox="0 0 200 112" role="img" aria-label="购买脉搏指数">
         <path className="g-track" d="M20 102a80 80 0 0 1 160 0" />
         <path className="g-fill" d="M20 102a80 80 0 0 1 160 0"
@@ -52,7 +52,7 @@ export function briefRows(a: Analysis): [string, string][] {
   if (!a.total) return [["…", "尚未采集"]];
   const out: [string, string][] = [];
   if (a.digest) out.push(["摘要", a.digest]);
-  out.push(["样本", `共 ${fmt(a.total)} 条评论：${fmt(a.meaningful)} 条有真实文字，${fmt(a.auto_reviews)} 条为系统默认（${Math.round((a.auto_share || 0) * 100)}%）。`]);
+  out.push(["样本", `共 ${fmt(a.total)} 条评论：${fmt(a.meaningful)} 条文字评论，${fmt(a.auto_reviews)} 条为系统默认（${Math.round((a.auto_share || 0) * 100)}%）。`]);
   if (a.avg_score) out.push(["评分", `平均 ${a.avg_score}/10；文字情感 ${Math.round((a.pos_rate || 0) * 100)}% 正面、${Math.round((a.neg_rate || 0) * 100)}% 负面。`]);
   if (a.themes?.length) {
     const bad = (a.top_neg_themes || []).slice(0, 2).map((t) => t.theme).join("、") || "无明显集中槽点";
@@ -73,7 +73,7 @@ export function briefRows(a: Analysis): [string, string][] {
 export function Brief({ a }: { a: Analysis }) {
   return (
     <div className="brief-list">
-      <dl>{briefRows(a).map(([k, v]) => (<div key={k} className="br-row"><dt>{k}</dt><dd>{v}</dd></div>))}</dl>
+      <dl>{briefRows(a).filter(([k])=>k!=="摘要").map(([k, v]) => (<div key={k} className="br-row"><dt>{k}</dt><dd>{v}</dd></div>))}</dl>
     </div>
   );
 }
@@ -134,7 +134,7 @@ export function Hist({ a }: { a: Analysis }) {
         ))}
       </div>
       <p className="hist-note">在 {fmt(a.total)} 条评论里，<b>{fmt(a.auto_reviews)}</b> 条是系统默认好评（占
-        {Math.round((a.auto_share || 0) * 100)}%）—— 真实口碑看带文字的 {fmt(a.meaningful)} 条；晒图 {fmt(a.image_reviews)} 条。</p>
+        {Math.round((a.auto_share || 0) * 100)}%）—— 可查看文字评论 {fmt(a.meaningful)} 条；晒图 {fmt(a.image_reviews)} 条。</p>
     </>
   );
 }
@@ -142,7 +142,7 @@ export function Hist({ a }: { a: Analysis }) {
 export function VariantsTrend({ a }: { a: Analysis }) {
   return (
     <>
-      <table className="varns">
+      {!!a.variants?.length?<table className="varns">
         <thead><tr><th>购买版本</th><th>条数</th><th>平均分</th><th>差评率</th></tr></thead>
         <tbody>
           {(a.variants || []).slice(0, 6).map((v) => (
@@ -153,9 +153,8 @@ export function VariantsTrend({ a }: { a: Analysis }) {
               <td className={`mono ${v.neg_rate > 0.25 ? "bad" : ""}`}>{Math.round(v.neg_rate * 100)}%</td>
             </tr>
           ))}
-          {!(a.variants || []).length && <tr><td colSpan={4} style={{ color: "var(--ink-soft)" }}>评论未标注版本信息</td></tr>}
         </tbody>
-      </table>
+      </table>:<p>评论未标注版本信息</p>}
       <Trend trend={a.trend || []} />
     </>
   );
@@ -189,7 +188,7 @@ export function Advice({ a }: { a: Analysis }) {
   return (
     <>
       <section className="panel advice buy reveal in">
-        <p className="eyebrow">FOR BUYERS · 买家情报站</p>
+        <p className="eyebrow">买家情报站</p>
         {rec.buyers.map((b) => (
           <div key={b.title} className={`card ${b.risk ? "risk" : ""}`}>
             <span className="ic">{b.icon}</span><b>{b.title}</b><p>{b.body}</p>
@@ -197,7 +196,7 @@ export function Advice({ a }: { a: Analysis }) {
         ))}
       </section>
       <section className="panel advice sell reveal in">
-        <p className="eyebrow">FOR SELLERS · 卖家行动清单</p>
+        <p className="eyebrow">卖家行动清单</p>
         <ol>
           {rec.sellers.map((s) => (
             <li key={s.action}>
@@ -215,7 +214,7 @@ export function RedFlags({ a }: { a: Analysis }) {
   if (!a.red_flag_count) return null;
   return (
     <section className="panel reveal in" id="flags">
-      <p className="eyebrow">RED FLAGS · 红线清单</p>
+      <p className="eyebrow">红线清单</p>
       {a.red_flags.slice(0, 6).map((f, i) => (
         <div key={i} className="rf">
           {f.flags.map((x) => <span key={x} className="rf-tag">{x}</span>)}
@@ -230,7 +229,7 @@ export function Voice({ items }: { items: CommentRow[] }) {
   return (
     <section className="voiceprint reveal in">
       <div className="vp-head">
-        <p className="eyebrow">THE VOICEPRINT · 评论声纹</p>
+        <p className="eyebrow">评论声纹</p>
         <p className="vp-legend">
           <i className="lg pos" />正面 <i className="lg neu" />中性 <i className="lg neg" />负面 ·
           柱高=字数 · 横轴=时间 · 白点=晒图
@@ -248,7 +247,7 @@ export function Aspects({ a }: { a: Analysis }) {
   if (!a.aspects?.length) return null;
   return (
     <section className="panel reveal in">
-      <p className="eyebrow">ASPECT SATISFACTION · 属性级满意度</p>
+      <p className="eyebrow">属性级满意度</p>
       <div className="aspects">
         {a.aspects.map((x) => (
           <div key={x.zh} className={`asp ${x.satisfaction < 40 ? "asp-bad" : x.satisfaction >= 75 ? "asp-good" : ""}`}
@@ -261,7 +260,7 @@ export function Aspects({ a }: { a: Analysis }) {
             <span className="asp-sub mono">正{x.pos}·中{x.neu}·负{x.neg}</span>
           </div>
         ))}
-        {a.aspect_rate != null && <p className="asp-note">属性引擎覆盖了 {pct(a.aspect_rate || 0)} 的真实文字评论</p>}
+        {a.aspect_rate != null && <p className="asp-note">属性引擎覆盖了 {pct(a.aspect_rate || 0)} 的文字评论</p>}
       </div>
     </section>
   );
@@ -275,9 +274,9 @@ export function QualityDigest({ a }: { a: Analysis }) {
   );
   return (
     <section className="panel reveal in">
-      <p className="eyebrow">DATA QUALITY · 口碑数据体检</p>
+      <p className="eyebrow">口碑数据体检</p>
       <div className="qm-grid">
-        {chip("真实均长", q.avgLen + " 字")}
+        {chip("文字均长", q.avgLen + " 字")}
         {chip("长评率", pct(q.longRate))}
         {chip("晒图率", pct(q.imgRate))}
         {chip("重复文本率", pct(q.dupRate), q.dupRate > 0.06)}
@@ -303,7 +302,7 @@ export function NlpDigest({ a }: { a: Analysis }) {
   if (!a.digest && !hasG && !hasF) return null;
   return (
     <section className="panel reveal in digest-card">
-      <p className="eyebrow">AUTO DIGEST · NLP 自动洞察</p>
+      <p className="eyebrow">评论摘要</p>
       {a.digest && <p className="dg-text">{a.digest}</p>}
       <div className="gd-grid">
         {(a.golden || []).map((g) => (
