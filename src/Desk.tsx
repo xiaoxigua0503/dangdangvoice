@@ -10,7 +10,7 @@ export function Desk({ product: p, comments, listeningPid }: { product: Product;
         {listeningPid && (
           <div className="listening-note" role="status">
             <span className="ln-dot" aria-hidden="true" />
-            <b>正在聆听 #{listeningPid}</b> —— 通道窗口未开，排队自动重试中；下方暂时呈现上一个完成分析的商品（#{p.pid}）。窗口一开这里会自动换成新商品的全部数据。
+            <b>正在聆听 #{listeningPid}</b> —— 本轮尚未取得可展示的评论，正在有限重试；下方仍是上一个商品（#{p.pid}）。当前原因和重试状态见采集日志与队列。
           </div>
         )}
         <section className="ribbon reveal in" id="prod-head">

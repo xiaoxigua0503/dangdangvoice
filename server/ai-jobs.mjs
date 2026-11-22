@@ -84,11 +84,11 @@ export async function loadOwnedRun(userId, runId, c = pool) {
     site: (()=>{const site=p.site||p.analysis?.site||{};return Object.fromEntries(['total_comment_num','pageCount','average_score'].filter(k=>site[k]!=null).map(k=>[k,site[k]]));})(),
     note_sample:p.analysis?.note_sample || null, note_partial:p.analysis?.note_partial || null,
   };
-  return { rows, product };
+  return { rows, product, collectionOutcome:p.site?.collection_outcome||p.analysis?.site?.collection_outcome };
 }
 export async function preview(userId, runId) {
   const config = aiConfig();
-  const { rows, product } = await loadOwnedRun(userId, runId);
+  const { rows, product, collectionOutcome } = await loadOwnedRun(userId, runId);
   const plan = makePlan(rows, product, config);
   const limits = {
     comments: numberEnv("AI_MAX_COMMENTS", 20000),
@@ -114,6 +114,7 @@ export async function preview(userId, runId) {
     plan,
     product,
     public: {
+      noPublicComments:rows.length===0&&['defaults_only','empty_confirmed'].includes(collectionOutcome),
       comments: rows.length,
       images: plan.images.filter((i) => !i.url.startsWith("missing:")).length,
       missingImageReferences: plan.images.filter((i) =>
@@ -141,6 +142,7 @@ export async function preview(userId, runId) {
 }
 export async function createJob(userId, runId) {
   const check = await preview(userId, runId);
+  if(check.public.noPublicComments)fail(409,'暂无公开文字评论，未创建 AI 评论分析任务');
   if (check.public.blocked)
     fail(
       422,

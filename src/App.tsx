@@ -1,3 +1,4 @@
+import {outcomeOf,issueText,canResume,queueDue,retryDelay,mayQueue,withCollectionLock,COLLECTION_MAX_MS,COLLECTION_MAX_FAILURES} from './collection';
 import {AIReport} from './AIReport';
 import {UpgradeDialog} from './UpgradeDialog';
 import { Account, CloudHistory } from './Account';
@@ -9,7 +10,7 @@ import { briefRows } from "./widgets";
 import {
   analyzeServer, api, archiveList, archiveRemove, archiveSave, buildCsvLocal, buildPayloadJson,
   csvRowsToComments, fmt, guessPid, normalizeProductInput, payloadFromJson, postJson, relay, resetCookies, PassRequired,
-  taskQueueAdd, taskQueueList, taskQueueRemove, taskQueueTouch, QUEUE_MAX_TRIES,
+  taskQueueAdd, taskQueueList, taskQueueRemove, taskQueueTouch, taskQueueFailure,taskQueueStop,taskQueueCooldown, QUEUE_MAX_TRIES,
 } from "./api";
 import type { Analysis, ArchiveEntry, CommentInput, CommentRow, JobState, Product, QueuedTask } from "./api";
 import { SAMPLE_BY_PID } from "./samples";
@@ -38,7 +39,7 @@ const STAGES = [
 ];
 
 
-const relayIssue = (code?:string) => code==='upstream_timeout' ? '连接当当超时' : code==='upstream_network_error' ? '服务器无法连接当当' : code?.startsWith('upstream_http_') ? `当当返回 HTTP ${code.slice(-3)}` : '被风控';
+const relayIssue = (code?:string) => issueText(code);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const rnd = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 const freshJob = (): JobState => ({
@@ -62,7 +63,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
   function changeUser(next:User|null) {
     const prev=ownerRef.current;
     if(prev?.id!==next?.id) {
-      accountEpoch.current++;
+      accountEpoch.current++;cancelRef.current=true;collectionController.current?.abort();
       const cleanUrl=new URL(location.href);cleanUrl.searchParams.delete("aiJob");window.history.replaceState(null,"",cleanUrl);
       setCloudRun(null);setAnalysisTab("basic");
       if(prev)pendingTask.current=null;
@@ -73,7 +74,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
     if(next?.verified&&pendingTask.current){const task=pendingTask.current;pendingTask.current=null;task();}
   }
   useEffect(()=>{changeUser(sessionUser);},[sessionUser]);
-  useEffect(()=>{ownerRef.current=sessionUser;return()=>{genRef.current++;accountEpoch.current++;ownerRef.current=null;cancelRef.current=true;pendingSave.current=null;pendingTask.current=null;};},[]);
+  useEffect(()=>{ownerRef.current=sessionUser;return()=>{genRef.current++;accountEpoch.current++;ownerRef.current=null;cancelRef.current=true;collectionController.current?.abort();pendingSave.current=null;pendingTask.current=null;};},[]);
   const saveKeys=useRef(new WeakMap<Product,Map<string,string>>());
   async function saveCloud(p:Product,c:CommentRow[],owner:User|null,epoch:number,key?:string) {
     let keys=saveKeys.current.get(p);if(!keys){keys=new Map();saveKeys.current.set(p,keys);}
@@ -101,10 +102,11 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
   const [job, setJob] = useState<JobState | null>(null);
   const [product, setProduct] = useState<Product | null>(null);
   const [comments, setComments] = useState<CommentRow[]>([]);
-  const [channel, setChannel] = useState({ list: "unknown", detail: "unknown" });
+  const [channel, setChannel] = useState({ metadata:"unknown",list: "unknown", detail: "unknown" });
   const [archive, setArchive] = useState<ArchiveEntry[]>([]);
   const [report, setReport] = useState(false);
   const cancelRef = useRef(false);
+  const collectionController=useRef<AbortController|null>(null),activeTaskRef=useRef("");
   const runningRef = useRef(false);
   const genRef = useRef(0); // newest user-visible owner of desk state
   const intentSeqRef = useRef(0);
@@ -135,7 +137,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
   const pidHint = useMemo(() => guessPid(url), [url]);
 
   const restoreArchive = useCallback(async (entry: ArchiveEntry, scroll = true, preempt = true) => {
-    if (preempt) { newDeskIntent();genRef.current += 1; cancelRef.current = true; pendingSave.current=null;setCloudStatus(entry.cloudKey?"已恢复云端记录":"已恢复本浏览器记录"); }
+    if (preempt) { newDeskIntent();genRef.current += 1; cancelRef.current = true; collectionController.current?.abort(); pendingSave.current=null;setCloudStatus(entry.cloudKey?"已恢复云端记录":"已恢复本浏览器记录"); }
     const g = genRef.current; // snapshot ownership; a newer run invalidates us
     try {
       let analysis = entry.product.analysis;
@@ -171,15 +173,21 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
 
   /* runLive: full workflow from a task descriptor. Returns true when a desk
      was produced (live or sample). Persists a retry queue otherwise. */
-  async function runTask(task: QueuedTask, gentle = false): Promise<boolean> {
+  async function runTask(task:QueuedTask,gentle=false,automatic=false):Promise<boolean>{
+    const owner=ownerRef.current;if(!owner?.verified)return false;
+    if(activeTaskRef.current===`${owner.id}:${task.pid}`){if(!gentle)setCollectErr('这个商品正在采集，请等待或先停止');return false;}
+    return withCollectionLock(owner.id,task.pid,()=>executeTask(task,gentle,automatic));
+  }
+  async function executeTask(task: QueuedTask, gentle = false,automatic=false): Promise<boolean> {
     const { pid } = task;
     const taskOwner=ownerRef.current, taskEpoch=accountEpoch.current;
     if(!taskOwner?.verified || (task.ownerId && task.ownerId!==taskOwner.id)) return false;
+    if(automatic&&!canResume(taskQueueList(),pid,taskOwner.id))return false;
     cloudDesk.current=false;pendingSave.current=null;setCloudStatus('');
     const maxPages = task.maxPages, maxDetails = task.maxDetails;
     if (runningRef.current) {
       if (gentle) return false;                       // background tick yields to user
-      cancelRef.current = true;                       // user pre-empts an in-flight run
+      cancelRef.current = true; collectionController.current?.abort();                       // user pre-empts an in-flight run
       for (let t = 0; t < 16 && runningRef.current; t++) await sleep(500);
       if (runningRef.current) { setCollectErr("上一次任务几秒内未能收尾，稍等再点一次"); return false; }
     }
@@ -188,13 +196,26 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
     const myGen = !gentle ? ++genRef.current : genRef.current; // background runs claim NOTHING
     if (deskSwitch) setRunPid(pid);
     runningRef.current = true;
+    activeTaskRef.current=`${taskOwner.id}:${pid}`;
     cancelRef.current = false;
+    const control=new AbortController();collectionController.current=control;
+    let deadline=false;const startedAt=task.addedAt||Date.now();task={...task,addedAt:startedAt};
+    const deadlineTimer=setTimeout(()=>{deadline=true;control.abort();},Math.max(1,COLLECTION_MAX_MS-(Date.now()-startedAt)));
+    const check=()=>{if(control.signal.aborted||cancelRef.current||accountEpoch.current!==taskEpoch||ownerRef.current?.id!==taskOwner.id||automatic&&!canResume(taskQueueList(),pid,taskOwner.id))throw new DOMException('Cancelled','AbortError');};
+    const leaseToken=crypto.randomUUID();let leased=false;
+    const lease=(action:'start'|'renew'|'stop'|'complete')=>api('/api/collection/lease',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,pid,token:leaseToken}),signal:AbortSignal.timeout(10000)});
+    const request=async(action:'prime'|'list'|'detail',payload:Record<string,unknown>)=>{check();if((task.retryAfterUntil||0)>Date.now()){push('当当要求暂缓请求，等待 Retry-After 指定时间');await wait(task.retryAfterUntil!-Date.now());}check();const result=await relay(action,{...payload,pid,leaseToken},control.signal);check();if(result.retryAfterMs){task.retryAfterUntil=Date.now()+result.retryAfterMs;setQueue(taskQueueCooldown(task,task.retryAfterUntil));}if(!result.ok){task.failures=(task.failures||0)+1;}task.consecutiveBlocked=result.blocked?(task.consecutiveBlocked||0)+1:0;return result;};
+    const wait=(ms:number)=>new Promise<void>((resolve,reject)=>{check();const end=()=>{clearTimeout(timer);reject(new DOMException('Cancelled','AbortError'));};const timer=setTimeout(()=>{control.signal.removeEventListener('abort',end);resolve();},ms);control.signal.addEventListener('abort',end,{once:true});});
+    const onQueueChange=()=>{const entry=taskQueueList().find(t=>t.pid===pid&&t.ownerId===taskOwner.id);if(automatic&&!entry||entry?.state==='stopped'||entry?.state==='paused'){cancelRef.current=true;control.abort();}};
+    window.addEventListener('storage',onQueueChange);
+    let lastOutcome='empty_unconfirmed',lastRetryAfter=0,emptyState='',queuePaused=false,metadataStatus='pending';
+    const retryLater=()=>{if(mayQueue(control.signal,cancelRef.current,accountEpoch.current===taskEpoch&&ownerRef.current?.id===taskOwner.id)){const list=taskQueueFailure(task,lastOutcome,lastRetryAfter);setQueue(list);queuePaused=list.find(t=>t.pid===pid&&t.ownerId===taskOwner.id)?.state==='paused';if(queuePaused&&deskSwitch&&genRef.current===myGen)setRunPid(null);}};
     setCollectErr("");
     let j = freshJob();
-    const push = (m: string) => { j = { ...j, log: [...j.log.slice(-40), `${new Date().toLocaleTimeString("zh-CN", { hour12: false })} ${m}`] }; if (deskSwitch) setJob(j); logEvent(m); };
-    const patch = (d: Partial<JobState>) => { j = { ...j, ...d }; if (deskSwitch) setJob(j); };
+    const push = (m: string) => { j = { ...j, log: [...j.log.slice(-40), `${new Date().toLocaleTimeString("zh-CN", { hour12: false })} ${m}`] }; if (deskSwitch&&genRef.current===myGen&&accountEpoch.current===taskEpoch) setJob(j); if(accountEpoch.current===taskEpoch)logEvent(m); };
+    const patch = (d: Partial<JobState>) => { j = { ...j, ...d }; if (deskSwitch&&genRef.current===myGen&&accountEpoch.current===taskEpoch) setJob(j); };
     if (deskSwitch) setJob(j); else logEvent(`后台队列任务启动 #${task.pid} —— 不打断当前画面`);
-    const byCid = new Map<string, CommentInput & { cid: string }>();
+    const byCid = new Map<string, CommentInput>();
     const meta: { name: string | null; price: string | null; image: string | null; description?: string | null; specifications?: Record<string,string> } = { name: null, price: null, image: null };
     let site: Record<string, unknown> | undefined;
     let firstAnswered = false;      // list endpoint replied (not WAF) on page 1
@@ -210,63 +231,55 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
       if (genRef.current !== myGen || commitBusy || !byCid.size) return;
       commitBusy = true;
       try {
-        const r2 = await analyzeServer([...byCid.values()], meta.name, site);
+        const r2 = await analyzeServer([...byCid.values()], meta.name, site,control.signal);
         if (genRef.current !== myGen) return;
         if (notePartial) r2.analysis.note_partial = notePartial;
-        setComments(r2.comments); setProduct(prodOf(r2.analysis));
+        check();setComments(r2.comments); setProduct(prodOf(r2.analysis));
       } catch { /* transient analyze hiccups are retried at next checkpoint */ }
       finally { commitBusy = false; }
     };
+    let leaseHeartbeat:ReturnType<typeof setInterval>|undefined;
     try {
+      await lease('start');leased=true;check();leaseHeartbeat=setInterval(()=>{void lease('renew').catch(()=>control.abort());},20000);
       // -- phase 0: warm the WAF channel; product meta from the real page
       {
         if (!gentle) push("预热当当通道（真实商品页 + cookie 会话）…");
         try {
-          const pr = await relay("prime", { pid });
-          setChannel((c) => ({ ...c, list: pr.blocked ? c.list : "clear" }));
-          if (pr.meta?.name) {meta.name = pr.meta.name;meta.description=pr.meta.description;meta.specifications=pr.meta.specifications;}  // canonical: title of THE requested id
-          if (!gentle) push(meta.name ? `商品页就位：${meta.name.slice(0, 22)}` : "商品页通道受阻，继续按步重试…");
-        } catch { if (!gentle) push("预热请求失败，略过"); }
+          const pr = await request("prime", { pid });
+          metadataStatus=outcomeOf(pr);
+          if(!pr.ok)lastOutcome=outcomeOf(pr);
+          setChannel((c) => ({ ...c, metadata: pr.blocked ? 'waf' : pr.ok?'clear':'unknown' }));
+          if(pr.meta){for(const key of ['name','price','image','description','specifications'] as const){if(pr.meta[key]!=null)Object.assign(meta,{[key]:pr.meta[key]});}}  // canonical: title of THE requested id
+          if (!gentle) push(meta.name ? `商品页就位：${meta.name.slice(0, 22)}` : `商品资料暂缺（${(pr.code==='metadata_missing'?'商品资料未识别':issueText(outcomeOf(pr)))}），继续读取评论`);
+        } catch { check();if (!gentle) push("商品资料请求失败，继续读取评论"); }
       }
 
       // -- phase 1: enumerate browseable list pages, per-page ladder
       patch({ phase: "listing" });
-      if (gentle) {
-        try {
-          const probe = await relay("list", { pid, pageIndex: 1 });
-          setChannel((c) => ({ ...c, list: probe.blocked ? "waf" : "clear" }));
-          if (probe.blocked || !((probe.items || []).length) && Number(probe.summary?.total_comment_num || 0) > 0) {
-            setQueue(taskQueueAdd({ pid, url: task.url, maxPages, maxDetails, intentAt: task.intentAt, ownerId: taskOwner?.id }));
-            j = { ...j, status: "queued", phase: "listing" }; if (deskSwitch) setJob(j);
-            push("重试探测：通道仍未开放 —— 保持排队，下次重试见队列表");
-            return false;
-          }
-        } catch {
-          setQueue(taskQueueAdd({ pid, url: task.url, maxPages, maxDetails, intentAt: task.intentAt, ownerId: taskOwner?.id }));
-          j = { ...j, status: "queued", phase: "listing" }; if (deskSwitch) setJob(j);
-          push("重试探测失败 —— 保持排队");
-          return false;
-        }
-      }
       let pageCount = 1;
       for (let pg = 1; pg <= maxPages; pg++) {
-        if (cancelRef.current) { j = { ...j, status: "cancelled", phase: "done" }; if (deskSwitch) setJob(j); setQueue(taskQueueRemove(pid,taskOwner.id)); push("已停止并移出队列"); return false; }
+        if (cancelRef.current) { j = { ...j, status: "cancelled", phase: "done" }; if (deskSwitch) setJob(j); setQueue(taskQueueStop(pid,taskOwner.id)); push("已停止采集"); return false; }
         let got = null as null | Awaited<ReturnType<typeof relay>>;
-        for (let attempt = 0; attempt < (gentle ? 1 : 3) && !got; attempt++) {
+        for (let attempt = 0; attempt < (gentle ? 1 : 3) && !got && (task.failures||0)<COLLECTION_MAX_FAILURES; attempt++) {
           let t = null as Awaited<ReturnType<typeof relay>> | null;
-          try { t = await relay("list", { pid, pageIndex: pg }); }
-          catch (e) { if (e instanceof PassRequired) throw e; t = null; }
-          if (t && !t.blocked) { setChannel((c) => ({ ...c, list: "clear" })); got = t; }
+          try { t = await request("list", { pid, pageIndex: pg }); }
+          catch (e) { check();if (e instanceof PassRequired) throw e; t = null; }
+          if(t&&['completed','partial','empty_confirmed','defaults_only'].includes(outcomeOf(t))) { setChannel((c) => ({ ...c, list: "clear" })); got = t;task.consecutiveBlocked=0; }
           else {
-            if (t) setChannel((c) => ({ ...c, list: t.code ? "unknown" : "waf" }));
-            if (attempt < 2) { push(`第${pg}页${t ? relayIssue(t.code) : "中继抖动"}，等待后重试 ${attempt + 1}/2…`); await sleep(rnd(3200, 6200) * (attempt + 1)); await relay("prime", { pid }).catch(() => undefined); }
-            else push(`第${pg}页仍不可达 —— 先用已有数据继续`);
+            lastOutcome=t?outcomeOf(t):'network_error';lastRetryAfter=t?.retryAfterMs||0;
+            setChannel(c=>({...c,list:lastOutcome==='blocked'?'waf':'unknown'}));
+            push(`第${pg}页：${issueText(lastOutcome)}${t?.httpStatus?`（HTTP ${t.httpStatus}）`:''}`);
+            if((task.consecutiveBlocked||0)>=2||(task.failures||0)>=COLLECTION_MAX_FAILURES||['parse_error','unsupported_response','empty_unconfirmed'].includes(lastOutcome))break;
+            if(attempt<(gentle?0:2))await wait(retryDelay(task.failures||1,lastRetryAfter));
+
           }
         }
-        if (!got) { firstBlocked = true; notePartial = `⚠ 当当列表未能继续读取：翻到第 ${pg - 1} 页停止，详见声纹日志`; break; }
+        check();if (!got) { if(site)site.list_status=byCid.size?'partial':lastOutcome;firstBlocked = true; notePartial = `⚠ 当当列表未能继续读取：翻到第 ${pg - 1} 页停止，详见声纹日志`; break; }
         if (pg === 1) { firstAnswered = true; firstBlocked = false; }
+        if(pg===1)emptyState=['defaults_only','empty_confirmed'].includes(outcomeOf(got))?outcomeOf(got):'';
         if (pg === 1) {
           site = {
+            collection_outcome:emptyState||'completed',metadata_status:metadataStatus,list_status:outcomeOf(got),detail_status:'not_requested',
             total_comment_num: (got.summary?.total_comment_num as string) ?? null,
             pageCount: (got.summary?.pageCount as string) ?? null,
             average_score: (got.summary?.average_score as string) ?? null,
@@ -282,29 +295,30 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
           const total = Number(got.summary?.total_comment_num ?? 0);
           const n1 = (got.items || []).length;
           if(Number(got.summary?.total_auto_count)>0)push(`站点计数 ${total}，其中自动评价 ${got.summary?.total_auto_count}；本次读取公开列表 ${got.summary?.pageCount} 页，AI 仅分析实际返回的评论`);
-          if (pageCount <= 1 && total > n1)
-            push(`注意：当当评论模板对本商品只提供 ${n1} 条翻阅（站点总数 ${total}，可翻页数=${got.summary?.pageCount}）—— 这是站方深度上限，不是漏采`);
+          if (!emptyState && pageCount <= 1 && total > n1)
+            push(`注意：当当评论模板对本商品只提供 ${n1} 条翻阅（站点总数 ${total}，可翻页数=${got.summary?.pageCount}）—— 仅说明本次返回范围，未确认站点限制原因`);
         }
-        for (const it of got.items || []) if (it.cid) byCid.set(String(it.cid), { ...it, cid: String(it.cid) });
+        if(outcomeOf(got)==='partial')notePartial='部分评论节点未能识别，保留已读取的原文';
+        for(const [index,it] of (got.items||[]).entries()){byCid.set(it.cid?String(it.cid):`page:${pg}:${index}`,{...it,cid:it.cid?String(it.cid):null});if(!it.cid)notePartial='部分评论缺少原站编号，无法确认跨页去重';}
         patch({ pages_done: pg, comments_done: byCid.size });
         push(`第${pg}页 ✓ +${(got.items || []).length} 条`);
         if (pg === 1 || pg % 6 === 0) void commitLive();
         if (pg >= pageCount) break;
-        await sleep(rnd(450, 950));
+        await wait(rnd(450, 950));
       }
-      if (!byCid.size) {
+      check();if (!byCid.size) {
         const tot0 = Number((site || {}).total_comment_num || 0);
-        if (firstAnswered && !firstBlocked && tot0 === 0) {
-          const zero = { total: 0, meaningful: 0, auto_reviews: 0, auto_share: 0, image_reviews: 0,
+        if (firstAnswered && !firstBlocked && ['empty_confirmed','defaults_only'].includes(emptyState)) {
+          const zero = { site,total: 0, meaningful: 0, auto_reviews: 0, auto_share: 0, image_reviews: 0,
             avg_score: null, labels: { pos: 0, neu: 0, neg: 0 }, pos_rate: 0, neg_rate: 0, score_hist: {},
             themes: [], top_neg_themes: [], pos_words: [], neg_words: [], red_flags: [], red_flag_count: 0,
             variants: [], trend: [], examples_pos: [], examples_neg: [], engine: "lexicon-blend (portable)",
-            note_sample: "通道正常但该商品编号没有可翻阅的公开评论（站点计数 0 条）。可能是错误编号或已下架商品，请核对链接。" } as unknown as Analysis;
-          const prodZ: Product = { ...prodOf(zero) };
+            note_partial: `${issueText(emptyState)}。站点总评价 ${site?.total_comment_num??0}，默认评价 ${site?.total_auto_count??0}；未生成用户文字评论。` } as unknown as Analysis;
+          check();const prodZ: Product = { ...prodOf(zero) };try{archiveSave(prodZ,[]);setArchive(archiveList());}catch{}
           if ((gentle ? !productRef.current : genRef.current === myGen)) { setComments([]); setProduct(prodZ); setRunPid(null); }
           else logEvent(`#${pid} 站点可翻阅评论为 0（已移出队列，未切换画面）`);
           j = { ...j, status: "done", phase: "done" }; if (deskSwitch) setJob(j);
-          push("完成 ✓（商品评论为空，已如实标注）");
+          push(issueText(emptyState));
           void saveCloud(prodZ,[],taskOwner,taskEpoch);
           setQueue(taskQueueRemove(pid,taskOwner.id));
           return true;
@@ -312,19 +326,19 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
         const smp = SAMPLE_BY_PID[pid];
         if (!smp) {
           // channel inside a WAF window: keep the task queued instead of dying
-          setQueue(taskQueueAdd({ pid, url: task.url, maxPages, maxDetails, intentAt: task.intentAt, ownerId: taskOwner?.id }));
-          j = { ...j, status: "queued" as JobState["status"], error: null };
-          push("实时通道不可达 —— 采集已进入自动重试队列；尚未创建 AI 任务，详见上方失败原因。可停止重试或稍后重新采集");
+          retryLater();
+          j = { ...j, status:queuePaused?"error":"queued", error:queuePaused?issueText(lastOutcome):null };
+          push(`${issueText(lastOutcome)}；已按有限重试策略保存状态，可在队列中手动重试`);setCollectErr(`#${pid} ${issueText(lastOutcome)}${queuePaused?'；自动采集已暂停，可手动重试':''}`);
           if (deskSwitch) setJob(j);
           return false;
         }
-        push("实时通道被占 —— 改用本商品内置真实样例（当日实测采集）完整走分析流程");
+        push(`${issueText(lastOutcome)} —— 改用本商品内置真实样例，来源将明确标注`);
         Object.assign(meta, { name: smp.product.name, price: smp.product.price, image: smp.product.image });
-        const resS = await analyzeServer(smp.comments as CommentInput[], smp.product.name, smp.product.analysis?.site ?? smp.product.site);
+        const resS = await analyzeServer(smp.comments as CommentInput[], smp.product.name, smp.product.analysis?.site ?? smp.product.site,control.signal);check();
         resS.analysis.note_sample = `本结果来自内置真实样例（${new Date(smp.savedAt).toLocaleDateString("zh-CN")} 由同一管线实测采集），非本次实时抓取`;
         const prodS: Product = {
           pid, name: meta.name, price: meta.price, image: meta.image,
-          url: url.trim() || `https://product.dangdang.com/${pid}.html`,
+          url: task.url || `https://product.dangdang.com/${pid}.html`,
           source: "sample", analysis: resS.analysis, comments_count: resS.comments.length, collected_at: Date.now(),
         };
         if (gentle ? !productRef.current : genRef.current === myGen) { setComments(resS.comments); setProduct(prodS); }
@@ -337,24 +351,30 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
         return true;
       }
 
+      if(!meta.name&&(task.consecutiveBlocked||0)<2&&(task.failures||0)<COLLECTION_MAX_FAILURES){
+        const metadata=await request('prime',{pid});
+        if(metadata.meta)for(const key of ['name','price','image','description','specifications'] as const)if(metadata.meta[key]!=null)Object.assign(meta,{[key]:metadata.meta[key]});
+        if(site)site.metadata_status=metadata.ok?'completed':outcomeOf(metadata);
+      }
       // -- phase 2: detail pages (full text + reliable meta)
       patch({ phase: "detailing" });
       const all = [...byCid.values()];
       const truncated = all.filter((c) => (c.text || "").length >= 70 && c.detail_url).slice(0, maxDetails);
       const isExactDetail = (u?: string | null) => !!u && (u as string).includes(`/0/${pid}/`);
-      const needMeta = () => !meta.price || !meta.image;   // title already trusted from prime; identity only from exact pages
+      const needMeta = () => !meta.name || !meta.price || !meta.image;   // title already trusted from prime; identity only from exact pages
       const extras = all.filter((c) => isExactDetail(c.detail_url) && !truncated.some((t) => t.cid === c.cid)).slice(0, 3);
-      const targets = [...truncated, ...(needMeta() ? extras : [])].filter((c) => c.detail_url);
+      const targets = [...truncated, ...(needMeta() ? extras : [])].filter((c) => c.detail_url&&(task.consecutiveBlocked||0)<2&&(task.failures||0)<COLLECTION_MAX_FAILURES);
       patch({ details_total: targets.length });
       for (let i = 0; i < targets.length; i++) {
-        if (cancelRef.current) { j = { ...j, status: "cancelled", phase: "done" }; if (deskSwitch) setJob(j); setQueue(taskQueueRemove(pid,taskOwner.id)); push("已停止并移出队列"); return false; }
+        if (cancelRef.current) { j = { ...j, status: "cancelled", phase: "done" }; if (deskSwitch) setJob(j); setQueue(taskQueueStop(pid,taskOwner.id)); push("已停止采集"); return false; }
         const c = targets[i];
         try {
-          const d = await relay("detail", { detailUrl: c.detail_url });
-          setChannel((ch) => ({ ...ch, detail: d.blocked ? (d.code?'unknown':"waf") : "clear" }));
+          const d = await request("detail", { detailUrl: c.detail_url });
+          setChannel((ch) => ({ ...ch, detail: d.blocked ? "waf" : d.ok?"clear":"unknown" }));
+          if(site)site.detail_status=outcomeOf(d);
           const f = d.fields as Record<string, unknown> | undefined;
-          if (d.blocked || !f) {
-            push(`详情 ${i+1}/${targets.length} 未读取成功：${relayIssue(d.code)}；保留列表原文`);
+          if (!d.ok || !f) {
+            push(`详情 ${i+1}/${targets.length} 未读取成功：${issueText(outcomeOf(d))}；保留列表原文`);
             if(truncated.includes(c))notePartial=`${notePartial} ⚠ 部分长评论的详情未读取成功，保留列表原文，详见声纹日志`.trim();
           }
           else {
@@ -374,18 +394,22 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
               if (f.price) meta.price = String(f.price);
             }
           }
-        } catch { push(`详情 ${i+1}/${targets.length} 中继请求失败；保留列表原文`);if(truncated.includes(c))notePartial=`${notePartial} ⚠ 部分长评论详情请求失败，保留列表原文`.trim(); }
+        } catch { check();push(`详情 ${i+1}/${targets.length} 中继请求失败；保留列表原文`);if(truncated.includes(c))notePartial=`${notePartial} ⚠ 部分长评论详情请求失败，保留列表原文`.trim(); }
         patch({ details_done: i + 1, comments_done: byCid.size });
+        if((task.consecutiveBlocked||0)>=2||(task.failures||0)>=COLLECTION_MAX_FAILURES){notePartial=`${notePartial} 详情补读达到访问/失败上限，已停止补读并保留列表原文。`.trim();push('已停止详情补读，保留已取得的评论');break;}
         if ((i + 1) % 10 === 0) { push(`详情尝试 ${i + 1}/${targets.length}`); void commitLive(); }
-        await sleep(rnd(240, 480));
+        await wait(rnd(240, 480));
       }
 
+      check();
       // -- phase 3: stateless analysis on the server engine
       patch({ phase: "analyzing" });
       push("本地词典 + 星级引擎分析中…");
-      const res = await analyzeServer([...byCid.values()], meta.name, site);
+      const res = await analyzeServer([...byCid.values()], meta.name, site,control.signal);
+      check();if(!meta.name||!meta.price||!meta.image)notePartial=`${notePartial} 已获取${notePartial?'部分':''}评论，商品资料暂缺；仅保留已获取字段。`.trim();
+      if(site)site.collection_outcome=notePartial?'partial':'completed';
       if (notePartial) res.analysis.note_partial = notePartial;
-      const prod: Product = { ...prodOf(res.analysis), url: url.trim() || `https://product.dangdang.com/${pid}.html` };
+      const prod: Product = { ...prodOf(res.analysis), url: task.url || `https://product.dangdang.com/${pid}.html` };
       try { archiveSave(prod, res.comments); setArchive(archiveList()); } catch { /* ignore */ }
       setQueue(taskQueueRemove(pid,taskOwner.id));
       void saveCloud(prod,res.comments,taskOwner,taskEpoch);
@@ -404,14 +428,20 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
       document.getElementById("desk")?.scrollIntoView({ behavior: "smooth", block: "start" });
       return true;
     } catch (e) {
+      if((e as Error & {status?:number}).status===409){patch({status:'cancelled',phase:'done'});setCollectErr((e as Error).message);return false;}
+      if(control.signal.aborted||cancelRef.current||accountEpoch.current!==taskEpoch||(e as Error).name==='AbortError'){
+        if(deadline){setQueue(taskQueueFailure({...task,addedAt:startedAt},'timeout'));setCollectErr('采集已达总时间上限，已暂停；可手动重试');}
+        else setQueue(taskQueueStop(pid,taskOwner.id));
+        if(deskSwitch&&genRef.current===myGen)setRunPid(null);patch({status:'cancelled',phase:'done'});push(deadline?'已达到采集时间上限':'已停止采集，不再自动排队');return false;
+      }
       if (e instanceof PassRequired) { setGateInfo({ gated: true, unlocked: false }); setJob(null); return false; }
       const msg = String((e as Error)?.message || e).slice(0, 300);
-      setQueue(taskQueueAdd({ pid, url: task.url, maxPages, maxDetails, intentAt: task.intentAt, ownerId: taskOwner?.id }));
-      patch({ status: "queued" as JobState["status"], error: null });
+      lastOutcome='upstream_error';task.failures=(task.failures||0)+1;retryLater();
+      patch({ status:queuePaused?'error':'queued', error:queuePaused?issueText(lastOutcome):null });
       push("× " + msg + " —— 已保留在队列，稍后自动重试");
       return false;
     } finally {
-      runningRef.current = false;
+      window.removeEventListener('storage',onQueueChange);clearTimeout(deadlineTimer);clearInterval(leaseHeartbeat);if(leased)await lease(j.status==='done'?'complete':'stop').catch(()=>{});runningRef.current = false;activeTaskRef.current="";if(collectionController.current===control)collectionController.current=null;
     }
   }
 
@@ -421,9 +451,11 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
     if (!norm.ok) { setCollectErr(norm.msg); logEvent(`投递被拒：${norm.msg}`); return; }
     if(!ownerRef.current?.verified){pendingTask.current=()=>submitTask(u,mp,md);setAccountOpen(true);document.getElementById('account')?.scrollIntoView();setCollectErr('请登录并验证邮箱，随后将继续本次采集');return;}
     if(gateRequirementRef.current){pendingTask.current=()=>submitTask(u,mp,md);setCollectErr('站点管理员已启用采集口令，请在账户区输入站点口令');setAccountOpen(true);return;}
+    const existing=taskQueueList().find(t=>t.pid===norm.pid&&t.ownerId===ownerRef.current?.id);if((existing?.retryAfterUntil||0)>Date.now()){setCollectErr(`当当要求等待 ${Math.ceil((existing!.retryAfterUntil!-Date.now())/1000)} 秒后再试`);return;}
+    setQueue(taskQueueRemove(norm.pid,ownerRef.current.id));
     const iq = ++intentSeqRef.current;
     newDeskIntent();
-    void runTask({ pid: norm.pid, url: norm.canonical, maxPages: mp, maxDetails: md, addedAt: 0, lastTry: 0, tries: 0, intentAt: iq, ownerId: ownerRef.current.id });
+    void runTask({ pid: norm.pid, url: norm.canonical, maxPages: mp, maxDetails: md, addedAt: Date.now(), lastTry: 0, tries: 0, intentAt: iq, ownerId: ownerRef.current.id });
   }
 
   /* queue daemon: while this tab lives, retry each queued task at widening
@@ -434,26 +466,26 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
       const now = Date.now();
       const due = taskQueueList()
         .filter((t) => !!t.ownerId && t.ownerId===ownerRef.current?.id)
-        .filter((t) => now - t.lastTry > Math.min(120_000, 20_000 * (2 ** Math.min(t.tries % 3, 3))))
+        .filter(t=>queueDue(t,now))
         .sort((a, b) => a.lastTry - b.lastTry);
       const t = due[0];
       if (!t) return;
       if (t.tries >= QUEUE_MAX_TRIES) {
         setQueue(taskQueueRemove(t.pid,t.ownerId));
-        logEvent(`#${t.pid} 多次重试仍在封窗，已移出队列`);
-        setCollectErr(`#${t.pid} 长期处于风控封窗 —— 已移出队列。建议：用「导入模式」或桌面版导出后「导入模式」。`);
+        logEvent(`#${t.pid} 已达到重试上限，停止自动重试`);
+        setCollectErr(`#${t.pid} 已达到重试上限，请手动重试。`);
         return;
       }
       queueBusyRef.current = true;
       const ck = t.tries === 0 ? t : { ...t }; // marker copy
-      taskQueueTouch(t.pid,false,t.ownerId);
+
       setQueue(taskQueueList());
       try {
         const u2 = ck.url || `https://product.dangdang.com/${ck.pid}.html`;
         const el = document.getElementById("url"); if (el) { const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!; set.call(el, u2); el.dispatchEvent(new Event("input", { bubbles: true })); }
         const ownIntent = (ck.intentAt || 0) > 0 && ck.intentAt === intentSeqRef.current;
         if (ownIntent) logEvent(`正在为你最近提交的 #${ck.pid} 重试通道…`);
-        await runTask(ck, ownIntent ? false : true);
+        await runTask(ck, ownIntent ? false : true,true);
       } finally { queueBusyRef.current = false; }
     };
     const id = window.setInterval(() => { void tick(); }, 15_000);
@@ -489,7 +521,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
         ...importedMetadata, pid, name, price, image, url: fileUrl || `https://product.dangdang.com/${pid}.html`,
         source: "import", analysis: res.analysis, comments_count: res.comments.length, collected_at: Date.now(),
       };
-      genRef.current += 1; cancelRef.current = true;
+      genRef.current += 1; cancelRef.current = true; collectionController.current?.abort();
       newDeskIntent();
       setRunPid(null);
       setComments(res.comments);
@@ -577,19 +609,19 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
               </button>
               {hot && (
                 <button className="ghost-btn stop-btn" type="button"
-                  onClick={() => { cancelRef.current = true; }}>停止本轮</button>
+                  onClick={() => { cancelRef.current = true; collectionController.current?.abort(); }}>停止本轮</button>
               )}
               <button className="sample-action" type="button" onClick={()=>void showSample()}>查看示例</button>
               {queuePanel && (
                 <div className="queue-box" role="status">
-                  <p className="qb-h">等待重试</p>
+                  <p className="qb-h">采集重试状态</p>
                   {visibleQueue.map((t) => (
                     <div key={t.pid} className="qb-row">
                       <span className="mono">#{t.pid}</span>
-                      <span>第 {t.tries + 1} 次将在 {Math.max(5, Math.round((20_000 * Math.pow(2, Math.min(t.tries % 3, 3)) - (Date.now() - t.lastTry)) / 1000))}s 后</span>
+                      <span>{t.state==='paused'||t.state==='stopped'?`${t.state==='paused'?'已暂停':'已停止'} · ${issueText(t.reason)}`:`等待重试 · ${Math.max(0,Math.ceil((Math.max(t.nextAt||0,(t.lastTry||t.addedAt)+retryDelay(t.tries))-Date.now())/1000))}s`}</span>
                       <span className="qb-act">
                         <button type="button" onClick={() => submitTask(t.url || t.pid, t.maxPages, t.maxDetails)}>立即重试</button>
-                        <button type="button" className="qb-x" onClick={() => setQueue(taskQueueRemove(t.pid,t.ownerId))}>移出</button>
+                        <button type="button" className="qb-x" onClick={() => {if(activeTaskRef.current===`${t.ownerId}:${t.pid}`){cancelRef.current=true;collectionController.current?.abort();}setQueue(taskQueueStop(t.pid,t.ownerId));}}>停止重试</button>
                       </span>
                     </div>
                   ))}
@@ -620,7 +652,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
             <div className="flow-in">
               {(hot||job?.status==="error")&&<div className="flow-title">
                 <h2 className="serif">{hot?"正在采集与分析":job?.status==="error"?"采集未完成":"采集进度"}</h2>
-                {job && hot && <button className="ghost-btn" onClick={() => { cancelRef.current = true; }}>停止</button>}
+                {job && hot && <button className="ghost-btn" onClick={() => { cancelRef.current = true; collectionController.current?.abort(); }}>停止</button>}
 
               </div>}
               {job && (hot||job.status==="error") && (
@@ -645,7 +677,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
               )}
               <details className="collection-details"><summary>采集详情</summary>                {applog.length > 0 && (!job || job.status !== "running") && (
                   <button className="ghost-btn" onClick={() => { setApplog([]); try { sessionStorage.removeItem(["ddv", "log", "v1"].join("-")); } catch { /* ignore */ } }}>清空日志</button>
-                )}<pre className="tail mono">{applog.slice(0, 9).reverse().join("\n")}</pre><button className="ghost-btn" type="button" onClick={() => { resetCookies(); setChannel({ list: "unknown", detail: "unknown" }); }}>重置中继会话</button></details>
+                )}<pre className="tail mono">{applog.slice(0, 9).reverse().join("\n")}</pre><button className="ghost-btn" type="button" onClick={() => { resetCookies(); setChannel({ metadata:"unknown",list: "unknown", detail: "unknown" }); }}>重置中继会话</button></details>
             </div>
           </section>
         )}

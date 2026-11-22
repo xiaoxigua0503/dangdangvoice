@@ -8,7 +8,7 @@ const config = aiConfig();
 logProductionStatus('worker');
 // Startup readiness checks only; no unit is claimed and no model request is sent.
 try {
- const schema=await pool.query("SELECT 1 FROM schema_migrations WHERE version='008_ai_model_fallback.sql'");
+ const schema=await pool.query("SELECT 1 FROM schema_migrations WHERE version='011_ai_display_phase.sql'");
  if(!schema.rowCount)throw new Error('migration_required');
  const identity=(await pool.query("SELECT current_database() db,current_schema() schema")).rows[0];
  const db=new URL(process.env.WORKER_DATABASE_URL||process.env.DATABASE_URL);
@@ -48,7 +48,7 @@ async function loop() {
         code: error.code ?? error.cause?.code ?? "unknown",
         reason:
           error.message === "migration_required"
-            ? "missing 008_ai_model_fallback.sql migration"
+            ? "missing 011_ai_display_phase.sql migration"
             : "connection or query failed",
       });
       await pool.end();

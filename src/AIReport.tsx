@@ -1,3 +1,5 @@
+import {AIProgress} from './AIProgress';
+import type {ReportProgress} from './AIProgress';
 import {AIChat} from "./AIChat";
 import {AIReviewArticle,AIReviewScope} from "./AIReviewArticle";
 import type {ProductReview} from "./AIReviewArticle";
@@ -25,6 +27,7 @@ interface Count {
   missingReferences?: number;
 }
 interface Job {
+  displayProgress?:ReportProgress;
   runId: string;
   product: { pid?:string; name?:string; image?:string|null; price?:string|null; sellerMetadata?:Record<string,unknown>; note_sample?: string; note_partial?: string };
   id: string;
@@ -138,7 +141,7 @@ export function AIReport({
     [evidence, setEvidence] = useState<any>(null);
   const [historyPage,setHistoryPage]=useState(1),[historyTotal,setHistoryTotal]=useState(0),[scope,setScope]=useState('all'),[refresh,setRefresh]=useState(0);
   const selected=useRef(jobId), intent=useRef(0);
-  const [historyError,setHistoryError]=useState('');
+  const [historyError,setHistoryError]=useState(''),[statusStale,setStatusStale]=useState(false);
   const evidenceDialog=useRef<HTMLDialogElement>(null);
   useEffect(()=>{if(evidence)evidenceDialog.current?.showModal();},[evidence]);
   function choose(id:string) {const url=new URL(location.href);url.searchParams.set('aiJob',id);window.history.replaceState(null,'',url);intent.current++;selected.current=id;setJobId(id);setJob(null);setFindings([]);setTotal(0);setEvidence(null);setPage(1);setMsg('');setBusy(false);}
@@ -182,15 +185,15 @@ export function AIReport({
     async function tick() {
       try {
         const j = await api<Job>("/api/ai/jobs/" + jobId, { signal: AbortSignal.any([c.signal, AbortSignal.timeout(15000)]) });
-        if (c.signal.aborted) return;
-        setJob(j);
+        if (c.signal.aborted||selected.current!==jobId) return;
+        setJob(j);setStatusStale(false);
         setHistory(rows=>rows.map(row=>row.id===j.id?{...row,state:j.state}:row));
         setMsg("");
         if (["queued", "running"].includes(j.state))
           timer = setTimeout(() => void tick(), 2500);
       } catch (e) {
-        if (!c.signal.aborted) {
-          setMsg("分析状态暂时无法读取，正在重新连接。");
+        if (!c.signal.aborted&&selected.current===jobId) {
+          setStatusStale(true);setMsg("分析状态暂时无法读取，正在重新连接。");
           if(![401,403,404].includes((e as Error & {status?:number}).status||0))timer = setTimeout(() => void tick(), 5000);
         }
       }
@@ -200,7 +203,7 @@ export function AIReport({
       c.abort();
       clearTimeout(timer);
     };
-  }, [jobId, refresh]);
+  }, [jobId, refresh,user?.id]);
   useEffect(() => {
     setFindings([]);
     if (!job?.report || (job.report.schemaVersion||0)>=2) return;
@@ -303,7 +306,7 @@ export function AIReport({
       {preview&&!hasArticle&&<div className="ai-preflight">
        {preview.missingImageReferences>0&&<p className="ai-warning">{preview.missingImageReferences} 条晒图评论缺少图片地址，无法读取对应图片。</p>}
        {preview.sourceNotices?.map((n:string,i:number)=><p className="ai-warning" key={i}>{n}</p>)}
-       {preview.blocked?<p role="alert">当前数据超出可处理范围，请联系管理员。</p>:!preview.ready?<p role="alert">AI 服务暂未就绪，请稍后再试。</p>:<button className="go" disabled={busy||processing} onClick={()=>void act('start')}>生成 AI 解读</button>}
+       {preview.noPublicComments?<p>暂无公开文字评论，未创建 AI 评论分析任务。</p>:preview.blocked?<p role="alert">当前数据超出可处理范围，请联系管理员。</p>:!preview.ready?<p role="alert">AI 服务暂未就绪，请稍后再试。</p>:<button className="go" disabled={busy||processing} onClick={()=>void act('start')}>生成 AI 解读</button>}
       </div>}
       {historyError&&<p className="ai-status-message" role="alert">{historyError} <button className="ghost-btn" onClick={()=>setRefresh(v=>v+1)}>重试</button></p>}
       {msg&&<p className="ai-status-message" role="status">{msg}</p>}
@@ -320,7 +323,7 @@ export function AIReport({
                 采集范围说明：{n}
               </p>
             ))}
-          {['queued','running'].includes(job.state)&&<p className="ai-simple-progress" role="status">{job.state==='queued'?'正在等待读取数据':job.progress?.stage==='prepare'?'正在读取数据与图片':job.progress?.stage==='synthesis'?'正在写综合解读':'正在对照评论与图片'}{job.progress?.retrying?' · 正在恢复处理':''}</p>}
+          {job.displayProgress&&!legacyReport?<AIProgress progress={job.displayProgress} stale={statusStale}/>:processing&&<p role="status">{job.state==='queued'?'等待后台处理':'后台处理中，等待阶段更新'}</p>}
           {job.mock&&<p className="ai-warning">本地 mock 演示，未进行真实推理，不可作为购买依据。</p>}
           <div className="ai-task-status"><span role="status">{statusLabel}</span>{processing&&<button className="ghost-btn" disabled={busy} onClick={()=>void act('cancel')}>停止处理</button>}{canRetry&&<button className="ghost-btn" disabled={busy} onClick={()=>void act('retry')}>重试分析</button>}</div>
           {hasArticle&&<p className="ai-analysis-scope">本次分析：{job.coverage.comments.completed} 条评论 · {job.coverage.images.completed} 张图片</p>}

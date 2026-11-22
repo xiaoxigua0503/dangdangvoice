@@ -169,6 +169,8 @@ export async function runOne({
       control.signal,
       AbortSignal.timeout(unit.config.timeoutMs + 20000),
     ]);
+    const publishPhase=phase=>c.query("UPDATE ai_units SET display_phase=$3,display_phase_at=now() WHERE id=$1 AND lease_token=$2 AND state='running'",[unit.id,unit.leaseToken,phase]);
+    await publishPhase('prepare');
     markStage("image_download");
     const image=unit.kind==='prepare'?[]:await reviewImages(c,unit);
     markStage('cache');
@@ -197,6 +199,7 @@ export async function runOne({
       markStage('provider');
       // One HTTP call per durable attempt. No in-request fallback/repair loop.
       const bodyBudget=selection.config;
+      await publishPhase('model');
       log('provider_started',{model:bodyBudget.model,images:image.length,mode:'full_multimodal'});
       await reserveProviderRequest(c,unit,selection,usage);
       const response=await inferFn(bodyBudget,unit.input,image,workSignal);
@@ -206,6 +209,7 @@ export async function runOne({
       catch(e){rejectedValidation={issues:e.validationIssues||[{code:e.message}],draft:response.result,promptVersion:PROMPT_VERSION};throw e;}
     }
     if (control.signal.aborted) throw new Error("aborted");
+    await publishPhase('persist');
     markStage("persist");
     usage={...usage,phaseMs,execution:{engineVersion:AI_ENGINE_VERSION,promptVersion:unit.config.schemaVersion>=2?PROMPT_VERSION:unit.config.promptVersion,schemaVersion:unit.config.schemaVersion,pipelineVersion:unit.config.pipelineVersion}};
     await c.query("BEGIN");

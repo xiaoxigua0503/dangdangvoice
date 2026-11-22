@@ -1,3 +1,4 @@
+import {loadReportProgress} from './ai-progress.mjs';
 import { z } from "zod";
 import {chatAPI} from "./ai-chat-api.mjs";
 import { pool, transaction } from "./db.mjs";
@@ -71,7 +72,7 @@ export async function aiAPI(req, res, url, readBody, json) {
       action = match[2] || "";
     const job = (
       await pool.query(
-        "SELECT id,user_id,run_id,state,config,created_at,updated_at,product,revision,provider_requests,report - 'findings' AS report FROM ai_jobs WHERE id=$1 AND user_id=$2",
+        "SELECT id,user_id,run_id,state,config,created_at,updated_at,product,revision,provider_requests,model_cursor,report - 'findings' AS report FROM ai_jobs WHERE id=$1 AND user_id=$2",
         [id, user.id],
       )
     ).rows[0];
@@ -133,6 +134,7 @@ export async function aiAPI(req, res, url, readBody, json) {
         compatibleWorker: job.config.schemaVersion===4&&job.config.executorVersion===aiConfig().executorVersion,
         delivered,
         progress: {...progress, latestError},
+        displayProgress:await loadReportProgress(pool,job),
         product: job.product,
         createdAt: job.created_at,
         updatedAt: job.updated_at,

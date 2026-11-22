@@ -1,3 +1,4 @@
+import {retryDelay,COLLECTION_MAX_MS,COLLECTION_MAX_FAILURES} from './collection';
 import { canonicalProductUrl } from "./url";
 export { guessPid, extractProductId, canonicalProductUrl, normalizeProductInput, isDangdangLink } from "./url";
 /* dangdangvoice client core: stateless step API calls + local data tools.
@@ -57,11 +58,11 @@ export interface JobState {
 }
 export interface CookieItem { s: string; n: string; v: string }
 export interface RelayResp {
-  ok: boolean; action: string; blocked: boolean; code?: string;
+  ok: boolean; action: string; blocked: boolean; code?: string; outcome?:string; stage?:string; httpStatus?:number|null; retryAfterMs?:number; diagnostic?:{networkCode?:string;rows?:number;parsed?:number;parser?:string};
   summary?: Record<string, string | number>;
   items?: CommentRow[];
   fields?: Partial<CommentRow> & { product_name?: string | null; price?: string | null; image?: string | null };
-  meta?: { name?: string | null; description?: string | null; specifications?: Record<string,string>; blocked?: boolean };
+  meta?: { price?:string|null; image?:string|null; name?: string | null; description?: string | null; specifications?: Record<string,string>; blocked?: boolean };
   pid?: string; cookies?: CookieItem[]; err?: string;
 }
 
@@ -112,18 +113,16 @@ function persistCookies() {
 }
 export function resetCookies() { egressCookies = []; persistCookies(); }
 
-export async function relay(action: "prime" | "list" | "detail", payload: Record<string, unknown>): Promise<RelayResp> {
-  const r = await api<RelayResp>("/api/relay", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action, ...payload, cookies: egressCookies }),
-  });
-  if (Array.isArray(r.cookies)) { egressCookies = r.cookies.slice(0, 40); persistCookies(); }
-  return r;
+export async function relay(action: "prime" | "list" | "detail", payload: Record<string, unknown>,signal?:AbortSignal): Promise<RelayResp> {
+ try{
+  const r=await api<RelayResp>('/api/relay',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,...payload,cookies:egressCookies}),signal});
+  if(Array.isArray(r.cookies)){egressCookies=r.cookies;persistCookies();}return r;
+ }catch(error){if(signal?.aborted)throw error;const e=error as Error & {status?:number};if(e instanceof PassRequired||[401,403,409].includes(e.status||0))throw error;return {ok:false,action,blocked:false,outcome:e.status===429?'rate_limited':e.status?'upstream_error':e.name==='TimeoutError'?'timeout':'network_error',httpStatus:e.status,code:e.status?`relay_http_${e.status}`:'relay_network_error',retryAfterMs:e.status===429?60000:0};}
 }
 
-export async function analyzeServer(comments: CommentInput[], name: string | null, site?: unknown) {
+export async function analyzeServer(comments: CommentInput[], name: string | null, site?: unknown, signal?:AbortSignal) {
   return api<{ analysis: Analysis; comments: CommentRow[]; brief: [string, string][] }>(
-    "/api/analyze", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ comments, name, site }) });
+    "/api/analyze", { method: "POST", headers: { "content-type": "application/json" }, signal, body: JSON.stringify({ comments, name, site }) });
 }
 
 /* ---------------- local CSV / payload parsing ---------------- */
@@ -267,23 +266,26 @@ export interface QueuedTask {
   pid: string; url: string; maxPages: number; maxDetails: number;
   addedAt: number; lastTry: number; tries: number;
   ownerId?: string;
+  state?:'waiting'|'paused'|'stopped'; reason?:string; nextAt?:number; retryAfterUntil?:number; failures?:number; consecutiveBlocked?:number;
   intentAt?: number; // user-intent sequence when submitted; newest intent may surface its result
 }
 const QUEUE_KEY = ["ddv","task","queue","v1"].join("-");
 
-export const QUEUE_MAX_TRIES = 40;
+export const QUEUE_MAX_TRIES = 6;
 
 export function taskQueueList(): QueuedTask[] {
   try {
     const v = JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]");
-    return Array.isArray(v) ? v.filter((t: QueuedTask) => t?.pid) : [];
+    const unique=new Map<string,QueuedTask>();
+    if(Array.isArray(v))for(const t of v)if(t?.pid){const key=`${t.ownerId||''}:${t.pid}`;const old=unique.get(key);if(!old||['paused','stopped'].includes(t.state))unique.set(key,t);}
+    return [...unique.values()].map(t=>{if(t.state==='stopped'||t.state==='paused')return t;if(t.tries>=QUEUE_MAX_TRIES||(t.failures||0)>=COLLECTION_MAX_FAILURES||Date.now()-t.addedAt>=COLLECTION_MAX_MS)return {...t,state:'paused' as const,reason:t.reason||'retry_budget'};return t;});
   } catch { return []; }
 }
-export function taskQueueAdd(t: Omit<QueuedTask, "addedAt" | "lastTry" | "tries">): QueuedTask[] {
+export function taskQueueAdd(t: Omit<QueuedTask, "addedAt" | "lastTry" | "tries"> & Partial<Pick<QueuedTask,"addedAt"|"lastTry"|"tries">>): QueuedTask[] {
   const list = taskQueueList();
   /* idempotent: an existing entry keeps its accumulated tries / schedule */
   if (!list.some((x) => x.pid === t.pid && x.ownerId === t.ownerId)) {
-    list.unshift({ ...t, addedAt: Date.now(), lastTry: 0, tries: 0 });
+    list.unshift({ addedAt:Date.now(),lastTry:Date.now(),tries:0,...t });
     try { localStorage.setItem(QUEUE_KEY, JSON.stringify(list.slice(0, 8))); } catch { /* ignore */ }
   }
   return taskQueueList();
@@ -302,3 +304,20 @@ export function taskQueueTouch(pid: string, ok = false, ownerId?: string): Queue
 }
 
 
+
+export function taskQueueFailure(task:QueuedTask,outcome:string,retryAfterMs=0):QueuedTask[]{
+ const now=Date.now(),list=taskQueueList(),old=list.find(t=>t.pid===task.pid&&t.ownerId===task.ownerId);
+ if(old?.state==='stopped'||old?.state==='paused')return list;
+ const t={...task,addedAt:task.addedAt||now,lastTry:now,tries:(task.tries||0)+1,consecutiveBlocked:task.consecutiveBlocked||0,state:'waiting' as QueuedTask['state'],reason:outcome};
+ t.nextAt=Math.max(now+retryDelay(t.failures||t.tries,retryAfterMs),task.retryAfterUntil||0);
+ if((t.consecutiveBlocked||0)>=2||t.tries>=QUEUE_MAX_TRIES||(t.failures||0)>=COLLECTION_MAX_FAILURES||now-t.addedAt>=COLLECTION_MAX_MS||t.nextAt-t.addedAt>=COLLECTION_MAX_MS||['parse_error','unsupported_response','empty_unconfirmed'].includes(outcome)){t.state='paused';if((t.failures||0)>=COLLECTION_MAX_FAILURES&&t.consecutiveBlocked<2)t.reason='retry_budget';}
+ const next=[t,...list.filter(x=>x.pid!==t.pid||x.ownerId!==t.ownerId)].slice(0,8);try{localStorage.setItem(QUEUE_KEY,JSON.stringify(next));}catch{}return next;
+}
+export function taskQueueStop(pid:string,ownerId?:string){const list=taskQueueList().map(t=>t.pid===pid&&t.ownerId===ownerId?{...t,state:'stopped' as const}:t);try{localStorage.setItem(QUEUE_KEY,JSON.stringify(list));}catch{}return list;}
+
+export function taskQueueCooldown(task:QueuedTask,until:number){
+ const list=taskQueueList(),index=list.findIndex(t=>t.pid===task.pid&&t.ownerId===task.ownerId);
+ const t=index>=0?list[index]:{...task,addedAt:task.addedAt||Date.now(),lastTry:Date.now(),tries:task.tries||0};
+ t.retryAfterUntil=Math.max(t.retryAfterUntil||0,until);t.nextAt=Math.max(t.nextAt||0,until);
+ if(index<0)list.unshift(t);try{localStorage.setItem(QUEUE_KEY,JSON.stringify(list.slice(0,8)));}catch{}return list;
+}

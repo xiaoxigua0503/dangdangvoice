@@ -1,3 +1,4 @@
+import {collectionLease} from './server/collection-lease.mjs';
 import {logProductionStatus} from "./server/production-status.mjs";
 import {pool} from "./server/db.mjs";
 import {adminAPI} from "./server/admin-api.mjs";
@@ -27,10 +28,9 @@ const jitter = (lo, hi) => lo + Math.random() * (hi - lo);
 // [store] — jobs/products maps, CSV/JSON import, CSV export builder
 
 // ---------------------------------------------------------------- scraper
-import { load } from "cheerio";
+import {blockedText,parseListResponse,parseDetailHtml,parseProductMeta,retryAfterMs,relayError} from "./server/collection-parser.mjs";
 
-const WAF_MARKERS = ["aliyun_waf", "renderData", "_waf_"];
-const blockedText = (t) => WAF_MARKERS.some((m) => (t || "").slice(0, 600).includes(m));
+
 
 // NOTE: mirrors canonical client logic in src/url.ts  ── edit both together.
 // The published bundle may contain exactly one server file (.qw-pages runtime
@@ -106,9 +106,9 @@ async function scopedFetch(jar, url, opts = {}) {
   };
   const cookie = jarHeaderFor(jar, host);
   if (cookie) headers.cookie = cookie;
-  const res = await fetch(url, { headers, redirect: "follow", signal: AbortSignal.timeout(opts.timeout ?? 15_000) });
+  const res = await fetch(url, { headers, redirect: "follow", signal: opts.signal?AbortSignal.any([opts.signal,AbortSignal.timeout(opts.timeout ?? 15_000)]):AbortSignal.timeout(opts.timeout ?? 15_000) });
   absorbCookies(jar, res, host);
-  if (!res.ok) { await res.body?.cancel(); throw Object.assign(new Error('upstream_http_error'), {code:`upstream_http_${res.status}`}); }
+  if (!res.ok) { await res.body?.cancel(); throw Object.assign(new Error('upstream_http_error'), {code:`upstream_http_${res.status}`,httpStatus:res.status,retryAfterMs:retryAfterMs(res.headers.get('retry-after'))}); }
   if (opts.bytes) return Buffer.from(await res.arrayBuffer());
   return await res.text();
 }
@@ -121,107 +121,6 @@ function listUrlFor(pid, pageIndex) {
   });
   return `${BASE}?${q}`;
 }
-
-const normImg = (x) => !x ? null : (x.startsWith("//") ? "https:" + x : x.replace(/^http:\/\//i, "https://"));
-function collectPics($el) {
-  const pics = [];
-  $el.find("img").each((_, im) => {
-    const at = im.attribs || {};                       // plain DOM attrs — no $ closure needed here
-    const src = normImg(at.src || at["data-src"] || "");
-    if (!src || !/reviewimg|Community/i.test(src)) return;
-    const big = normImg(at["data-big-pic"] || src.replace(/_p\.([a-z]+)$/i, "_e.$1")) || src;
-    if (!pics.some((x) => x.th === src)) pics.push({ th: src, big });
-  });
-  return pics;
-}
-function parseListFragment(html) {
-  const $ = load(html);
-  const out = [];
-  $(".comment_items").each((_, el) => {
-    const $el = $(el);
-    const a = $el.find(".describe_detail a").first();
-    let href = a.attr("href") || "";
-    if (href.startsWith("//")) href = "https:" + href;
-    const text = (a.text() || $el.find(".describe_detail").text() || "").replace(/\s+/g, " ").trim();
-    const dm = href.match(/\/comment\/detail\/(\d+)\/(\d+)\/(\d+)/);
-    const cid = dm ? dm[3] : ($el.find("[data-comment-id]").first().attr("data-comment-id") || null);
-    let score = null;
-    const em = $el.find(".pinglun em").first().text();
-    const sm = em && em.match(/(\d+)/);
-    if (sm) score = +sm[1];
-    else {
-      const w = $el.find(".star").first().attr("style");
-      const wm = w && w.match(/width:(\d+)%/);
-      if (wm) score = Math.max(1, Math.min(10, Math.round(+wm[1] / 10)));
-    }
-    const lineEls = $el.find(".starline span");
-    const line = lineEls.toArray().map((s) => $(s).text().trim()).join(" ");
-    const date = (line.match(/\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}(?::\d{2})?)?/) || [])[0] || null;
-    let variant = null;
-    lineEls.toArray().forEach((s) => {
-      const t = $(s).text().trim();
-      if (t.startsWith("类型")) variant = t.split("：").slice(1).join("：").trim();
-    });
-    const user = $el.find(".items_left_pic .name").first().text().trim() || $el.find(".username").first().text().trim() || null;
-    const level = $el.find(".items_left_pic .level").first().text().trim() || $el.find(".level").first().text().trim() || null;
-    const pics = collectPics($el);
-    const hasImg = pics.length > 0 || $el.find(".pic_list img, .pic_preview img, .show_pic img, .pic_show img[src]").length > 0;
-    if (!cid && !text) return;
-    out.push({ cid, detail_url: href || null, text, score, date, variant, user, level, has_img: hasImg, pics: pics.length ? pics : null });
-  });
-  return out;
-}
-
-function parseDetailHtml(html) {
-  const $ = load(html);
-  const d = {};
-  d.text_full = ($(".describe_long").first().text() || $(".describe_detail").first().text() || "").trim();
-  const em = $(".pinglun em").first().text();
-  const sm = em && em.match(/(\d+)/);
-  d.score = sm ? +sm[1] : null;
-  const line = $(".starline span").toArray().map((s) => $(s).text().trim()).join(" ");
-  d.date = d.date || (line.match(/\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}(?::\d{2})?)?/) || [])[0] || null;
-  d.user = $(".items_left_pic .name").first().text().trim() || null;
-  d.level = $(".items_left_pic .level").first().text().trim() || null;
-  d.pics = collectPics($(".comment_items").length ? $(".comment_items").first() : $.root());
-  d.has_img = d.pics.length > 0 || $(".pic_list img, .big_pic_wrap img[src], .show_pic img").length > 0;
-  if (!d.pics.length) d.pics = null;
-  d.product_name = $(".book_info .name a").first().text().trim() || null;
-  d.price = $(".price_d").first().text().trim() || null;
-  let img = $(".book_info .pic img").first().attr("src") || null;
-  if (img?.startsWith("//")) img = "https:" + img;
-  d.image = img;
-  return d;
-}
-
-// meta from the (GBK-encoded) product page HTML — works even when the list
-// channel is blocked. Price/cover come from detail pages only (JS-driven here).
-function parseProductMeta(bufOrText, pid) {
-  const out = {};
-  let html = "";
-  try {
-    if (typeof bufOrText === "string") html = bufOrText;
-    else html = new TextDecoder("gb18030").decode(bufOrText);
-  } catch { return out; }
-  if (!html || blockedText(html)) return out;
-  const ttl = (html.match(/<title>([^<]{4,200})<\/title>/i) || [])[1] || "";
-  const guil = ttl.match(/《([^》]{4,120})》/);
-  let name = guil ? guil[1] : ttl.split(" - 当当")[0].replace(/[《》]/g, "").trim();
-  if (/商品不存在|404|页面不存在|暂时没有找到|抱歉|验证|欢迎光临/.test(name)) name = null;
-  out.name = name || null;
-  if(!out.name) return out;
-  const $=load(html);
-  out.description=$('meta[name="description"]').attr('content')?.trim() || null;
-  const specifications={};
-  // Only data actually present on the requested product page. No inferred fields.
-  $('#detail_describe li, .key li').each((_,el)=>{
-    const raw=$(el).text().trim(), colon=raw.search(/[:：]/);
-    if(colon>0 && raw.length<=1000) specifications[raw.slice(0,colon).trim()]=raw.slice(colon+1).trim();
-  });
-  if(Object.keys(specifications).length)out.specifications=specifications;
-  return out;
-}
-
 
 // ---------------------------------------------------------------- analysis
 // Deterministic portable engine: curated Dangdang-domain lexicon + star prior.
@@ -662,13 +561,7 @@ function rateOk(ip) {
 
 const lastEgress = { list: "unknown", detail: "unknown", at: 0 };
 const note = (ep, ok) => { lastEgress[ep] = ok ? "clear" : "waf"; lastEgress.at = Date.now(); };
-function relayFailure(error, action, pid) {
-  const cause = error?.cause?.code || error?.code;
-  const code = /^upstream_http_\d{3}$/.test(cause || '') ? cause
-    : error?.name === 'TimeoutError' || /TIMEOUT/.test(cause || '') ? 'upstream_timeout' : 'upstream_network_error';
-  console.warn('relay_failure '+JSON.stringify({action,pid,code,networkCode:/^[A-Z0-9_]{1,60}$/.test(cause||'')?cause:undefined}));
-  return code;
-}
+function relayFailure(error,action,pid){const result=relayError(error);console.warn('relay_failure '+JSON.stringify({action,pid,code:result.code,httpStatus:result.httpStatus,networkCode:result.diagnostic?.networkCode}));return result;}
 
 async function handleApi(url, req, res) {
   const path = url.pathname;
@@ -681,59 +574,47 @@ async function handleApi(url, req, res) {
     });
   }
 
+  if(req.method==='POST'&&path==='/api/collection/lease'){
+    try{const owner=await requireUser(req);const body=JSON.parse(await readBody(req,4096));return json(res,200,await collectionLease(pool,owner.id,body));}
+    catch(e){return json(res,e.status||(['ZodError','SyntaxError'].includes(e.name)?422:503),{msg:e.status?e.message:'采集协调服务暂不可用，请刷新后重试'});}
+  }
   if (req.method === "POST" && path === "/api/relay") {
     const ip = (req.headers["x-forwarded-for"] || "anon").split(",")[0].trim();
-    if (!rateOk(ip)) return json(res, 429, { error: "rate_limited", msg: "请求过密，已限速" });
+    if (!rateOk(ip)) return json(res, 429, { error: "rate_limited", msg: "请求过密，已限速", retryAfterMs:60000 });
     let body;
     try { body = JSON.parse((await readBody(req, 262_144)) || "{}"); } catch { return json(res, 422, { error: "invalid_json" }); }
     const jar = jarFromList(body.cookies);
     const action = String(body.action || "");
-
-    if (action === "prime") {
-      const pid = extractPid(body.url || body.pid);
-      if (!pid) return json(res, 422, { error: "no_product_id" });
-      let blocked = false, meta = {}, code;
-      try { await scopedFetch(jar, "https://www.dangdang.com/", {}); } catch { blocked = true; }
-      try {
-        const htmlBuf = await scopedFetch(jar, `https://product.dangdang.com/${pid}.html`,
-          { referer: "https://www.dangdang.com/", bytes: true, timeout: 18_000 });
-        meta = parseProductMeta(htmlBuf, pid);
-        blocked = !meta.name;
-      } catch (e) { blocked = true; code = relayFailure(e, action, pid); }
-      return json(res, 200, { ok: true, action, blocked, code, meta, pid, cookies: jarToList(jar) });
+    if(!body.leaseToken)return json(res,409,{error:'collection_session_required',msg:'请刷新页面后重新开始采集，本轮需要有效的采集会话'});
+    if(body.leaseToken){
+      try{const owner=await requireUser(req);const pid=extractPid(body.pid||body.detailUrl);await collectionLease(pool,owner.id,{action:'renew',pid,token:body.leaseToken});}
+      catch(e){return json(res,e.status||503,{msg:'本轮采集已停止或失去所有权，请重新提交',error:'collection_lease_lost'});}
     }
 
-    if (action === "list") {
-      const pid = extractPid(body.pid);
-      const pageIndex = Math.max(1, Math.min(+body.pageIndex || 1, 60));
-      if (!pid) return json(res, 422, { error: "no_product_id" });
-      try {
-        const txt = await scopedFetch(jar, listUrlFor(pid, pageIndex),
-          { ajx: true, referer: `https://product.dangdang.com/${pid}.html` });
-        if (blockedText(txt)) { note("list", false); return json(res, 200, { ok: false, action, blocked: true, cookies: jarToList(jar) }); }
-        let d; try { d = JSON.parse(txt); } catch { note("list", false); return json(res, 200, { ok: false, action, blocked: true, cookies: jarToList(jar) }); }
-        let lst = d?.data?.list ?? {};
-        if (typeof lst === "string") lst = JSON.parse(lst);
-        const summary = lst.summary || {};
-        const items = parseListFragment(lst.html || "");
-        note("list", true);
-        return json(res, 200, { ok: true, action, blocked: false, summary, items, cookies: jarToList(jar) });
-      } catch (e) {
-        return json(res, 200, { ok: false, action, blocked: true, code: relayFailure(e, action, pid), cookies: jarToList(jar) });
-      }
-    }
 
-    if (action === "detail") {
-      const du = String(body.detailUrl || "");
-      if (!DETAIL_ALLOWED.test(du)) return json(res, 422, { error: "detail_url_not_allowed" });
-      try {
-        const txt = await scopedFetch(jar, du, { timeout: 15_000 });
-        if (blockedText(txt)) { note("detail", false); return json(res, 200, { ok: false, action, blocked: true, cookies: jarToList(jar) }); }
-        note("detail", true);
-        return json(res, 200, { ok: true, action, blocked: false, fields: parseDetailHtml(txt), cookies: jarToList(jar) });
-      } catch (e) {
-        return json(res, 200, { ok: false, action, blocked: true, code: relayFailure(e, action), cookies: jarToList(jar) });
-      }
+    const control=new AbortController();if(req.aborted||res.destroyed)control.abort();
+    req.once('aborted',()=>control.abort());res.once('close',()=>{if(!res.writableEnded)control.abort();});
+    const fetchStep=(url,opts={})=>scopedFetch(jar,url,{...opts,signal:control.signal});
+    const respond=result=>{if(action==='list'||action==='detail'){lastEgress[action]=result.blocked?'waf':result.ok?'clear':'unknown';lastEgress.at=Date.now();}return json(res,200,{action,stage:action,...result,cookies:jarToList(jar)});};
+    if(action==='prime'){
+      const pid=extractPid(body.url||body.pid);if(!pid)return json(res,422,{error:'no_product_id'});
+      try{
+        const bytes=await fetchStep(`https://product.dangdang.com/${pid}.html`,{referer:'https://www.dangdang.com/',bytes:true,timeout:18000});
+        const html=new TextDecoder('gb18030').decode(bytes);
+        if(blockedText(html))return respond({ok:false,outcome:'blocked',blocked:true,code:'access_denied',meta:{},pid,httpStatus:200});
+        const meta=parseProductMeta(bytes,pid);
+        return respond({ok:!!meta.name,outcome:meta.name?'completed':'parse_error',blocked:false,code:meta.name?undefined:'metadata_missing',meta,pid,httpStatus:200});
+      }catch(e){return respond({...relayFailure(e,action,pid),meta:{},pid});}
+    }
+    if(action==='list'){
+      const pid=extractPid(body.pid),pageIndex=Math.max(1,Math.min(+body.pageIndex||1,60));if(!pid)return json(res,422,{error:'no_product_id'});
+      try{const txt=await fetchStep(listUrlFor(pid,pageIndex),{ajx:true,referer:`https://product.dangdang.com/${pid}.html`});return respond({...parseListResponse(txt),httpStatus:200});}
+      catch(e){return respond(relayFailure(e,action,pid));}
+    }
+    if(action==='detail'){
+      const du=String(body.detailUrl||'');if(!DETAIL_ALLOWED.test(du))return json(res,422,{error:'detail_url_not_allowed'});
+      try{const txt=await fetchStep(du,{timeout:15000});if(blockedText(txt))return respond({ok:false,outcome:'blocked',blocked:true,code:'access_denied',httpStatus:200});const fields=parseDetailHtml(txt);return respond({ok:!!fields.content_recognized,outcome:fields.text_full?'completed':fields.content_recognized?'partial':'parse_error',blocked:false,code:fields.content_recognized?undefined:'comment_content_missing',fields,httpStatus:200});}
+      catch(e){return respond(relayFailure(e,action));}
     }
 
     return json(res, 422, { error: "unknown_action" });
