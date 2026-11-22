@@ -597,3 +597,12 @@ ol#sell-list{list-style:none;margin:0;padding:0;counter-reset:s}
 @media(max-width:800px){.mast-in{flex-wrap:wrap;gap:12px;padding:12px 16px}.mast-nav{display:flex;order:3;flex-basis:100%;justify-content:space-between;gap:10px;border-top:1px solid #ffffff30;padding-top:12px}.mast-nav a{font-size:13px}.hero-in{grid-template-columns:1fr;gap:20px}.hero-copy h1 br{display:none}.hero h1{font-size:28px}.brand-txt i{display:none}.cloud-row{align-items:flex-start;flex-direction:column}.cloud-row .chips{flex-wrap:wrap}.cloud-history{margin:12px 0}.result-toolbar{flex-wrap:wrap}.ai-source-dialog{padding:18px}.ai-report dialog.ai-evidence{padding:18px}}
 
 .device-exports{margin:18px 0}.device-entry{display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid var(--line);font-size:13px}.device-entry>span{flex:1;min-width:0;overflow-wrap:anywhere}.device-entry summary{white-space:nowrap}.account-dropdown input{width:100%}.ai-review-quality .ai-review-scope{margin-top:12px}
+
+/* DiDi stays inside the AI article area; evidence uses the existing dialog. */
+.ai-chat{margin:24px 0;padding:22px;border:1px solid var(--line,#ded8ce);border-radius:12px;background:var(--paper,#faf7f0);min-width:0}
+.ai-chat h3{margin:0 0 8px;font-size:24px}.ai-chat header p{margin:8px 0;overflow-wrap:anywhere}.ai-chat small{color:#71685e;line-height:1.7}.ai-chat code{font-size:11px}
+.ai-chat-messages{max-height:520px;overflow-y:auto;overflow-wrap:anywhere;overscroll-behavior:contain;margin:14px 0}
+.ai-chat-turn{padding:14px 0;border-bottom:1px solid #ded8ce}.ai-chat-question{display:flex;gap:12px;white-space:pre-wrap}.ai-chat-question>b{flex-shrink:0;color:#a42d36}.ai-chat-answer>p{white-space:pre-wrap;line-height:1.9}.ai-chat-scope{display:block;margin-top:12px}
+.ai-chat form>label{display:block;margin-bottom:8px}.ai-chat textarea{display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:90px;max-height:320px;padding:12px;border:1px solid #cfc6b8;border-radius:8px;background:#fffdf8;font:inherit;line-height:1.7;color:inherit}.ai-chat textarea:focus-visible{outline:2px solid #a42d36;outline-offset:2px}
+.ai-chat-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:12px 0}.ai-chat-controls label{flex:1;font-size:13px;min-width:180px}.ai-chat .chips{flex-wrap:wrap}.ai-chat .chip{white-space:normal;text-align:left}.ai-chat form>small{display:block}
+@media(max-width:600px){.ai-chat{padding:15px;margin:18px 0}.ai-chat-controls label{flex-basis:100%}.ai-chat-messages{max-height:440px}.ai-chat-question{gap:8px}}

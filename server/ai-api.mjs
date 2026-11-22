@@ -1,4 +1,5 @@
 import { z } from "zod";
+import {chatAPI} from "./ai-chat-api.mjs";
 import { pool, transaction } from "./db.mjs";
 import { requireUser, checkOrigin, effectivePro } from "./accounts.mjs";
 import { preview, createJob, coverage, loadOwnedRun } from "./ai-jobs.mjs";
@@ -14,6 +15,7 @@ export async function aiAPI(req, res, url, readBody, json) {
     const user = await requireUser(req);
     if (user.plan !== "pro")
       fail(403, "AI 深度分析仅向 Pro 账户开放；免费基础分析继续可用");
+    if(await chatAPI(req,res,url,user,readBody,json)) return true;
     const path = url.pathname;
     let match;
     if (

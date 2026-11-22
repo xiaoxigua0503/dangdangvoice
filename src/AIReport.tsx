@@ -1,3 +1,4 @@
+import {AIChat} from "./AIChat";
 import {AIReviewArticle,AIReviewScope} from "./AIReviewArticle";
 import type {ProductReview} from "./AIReviewArticle";
 import { useEffect, useRef, useState } from "react";
@@ -325,6 +326,7 @@ export function AIReport({
           {hasArticle&&<p className="ai-analysis-scope">本次分析：{job.coverage.comments.completed} 条评论 · {job.coverage.images.completed} 张图片</p>}
           {(job.coverage.comments.completed<job.coverage.comments.total||job.coverage.images.completed<job.coverage.images.total)&&<p className="ai-warning">{hasArticle?'尚未完成分析':'待分析'}：{Math.max(0,job.coverage.comments.total-job.coverage.comments.completed)} 条评论 · {Math.max(0,job.coverage.images.total-job.coverage.images.completed)} 张图片。</p>}
           {modernReport&&<AIReviewArticle key={job.id+job.report?.generatedAt} jobId={job.id} report={job.report!} showEvidence={(kind,id)=>void showEvidence(kind,id)}/>}
+          {hasArticle&&["completed","partial"].includes(job.state)&&<AIChat key={`${user.id}:${job.id}:${job.runId}:${runId}:${job.report?.generatedAt}`} jobId={job.id} runId={job.runId} name={job.product.name||"当前商品"} showEvidence={(kind,id)=>void showEvidence(kind,id)}/>}
           {!modernReport&&<article className="ai-review-article ai-report-placeholder"><header className="ai-article-header"><span className="ai-article-label">AI 综合解读</span><h2 className="ai-review-verdict">暂未生成综合解读</h2><p>{processing?'正在处理本次评论与图片，请稍候。':legacyReport?'这是一份早期证据报告，可继续阅读下方已保存内容。':'当前没有可显示的有效文章。原始数据与任务记录仍保留。'}</p></header></article>}
           {job.report && (job.report.schemaVersion||0)<2 && (
             <article className="ai-review-article ai-legacy-article"><span className="ai-article-label">旧版证据报告</span>
