@@ -1,3 +1,11 @@
+## Current report extension: model-authored visuals v1
+
+The v4 article now optionally carries up to four model-authored structured visual
+blocks in the same request. See [AI visual contract, partial validation, offline
+checks and VM update notes](./README-AI-VISUALS.md). Current prompt version is
+`ddv-product-summary-18-visuals-1`; the source-ID normalization below remains in
+place. Earlier change records below describe their respective releases.
+
 ## Report source-ID contract fix (summary prompt 17)
 
 Read-only inspection of task `ecc381eb-b1ca-4538-a83f-a4d1899f70ca` confirmed that both immutable prepare/review inputs contain internal `comments[].id` (`C0`…`C11`) alongside `comments[].sourceId`, copied from original `row.cid`, and `comments[].data.detail_url`. Specifically, `379237662` maps to `C0` and `379197532` to `C1`; each URL also ends in the corresponding original cid. Both saved invalid-reference drafts (attempts 288/289, qwen3.8-flash) were checked offline: all 8/12 returned IDs respectively have unique task-local mappings. No production rows were changed and no inference was called.

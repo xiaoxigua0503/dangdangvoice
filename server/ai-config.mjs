@@ -14,7 +14,7 @@ export const numberEnv = (name, fallback, min = 1, max = 1000000) =>
     min,
     Math.min(max, Math.floor(Number(process.env[name]) || fallback)),
   );
-export const PROMPT_VERSION = "ddv-product-summary-17";
+export const PROMPT_VERSION = "ddv-product-summary-18-visuals-1";
 export function aiConfig() {
   const provider = process.env.AI_PROVIDER || "qwen";
   const model = process.env.AI_MODEL || "qwen3.7-flash";
@@ -36,6 +36,7 @@ export function aiConfig() {
     maxRetryAfterMs:numberEnv("AI_MAX_RETRY_AFTER_SECONDS",120,1,600)*1000,
     promptVersion: PROMPT_VERSION,
     schemaVersion: 4,
+    visualsVersion: 1,
     pipelineVersion: "product-summary-v4",
     executorVersion: AI_ENGINE_VERSION,
     outputTokens: numberEnv("AI_MAX_OUTPUT_TOKENS", 4096, 512, 8192),

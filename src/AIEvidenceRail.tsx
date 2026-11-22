@@ -6,8 +6,9 @@ interface SourceComment {id:string;data:{text?:string;text_full?:string;date?:st
 interface SourceImage {id:string;content_hash?:string|null}
 
 // Preview only existing, owned evidence. No model text is used as a quotation.
-export function AIEvidenceRail({jobId,references,showEvidence}:{jobId:string;references:EvidenceReferences;showEvidence:(kind:string,id:string)=>void}) {
+export function AIEvidenceRail({jobId,references,showEvidence,excludeImageIds=[]}:{excludeImageIds?:string[];jobId:string;references:EvidenceReferences;showEvidence:(kind:string,id:string)=>void}) {
  const [comments,setComments]=useState<SourceComment[]>([]),[images,setImages]=useState<SourceImage[]>([]),[loading,setLoading]=useState(false),[unavailable,setUnavailable]=useState(false),[failedImages,setFailedImages]=useState<string[]>([]);
+ const excluded=excludeImageIds.join(',');
  const commentIds=[...new Set(references.comments)].slice(0,2).join(','),imageIds=[...new Set(references.images)].slice(0,4).join(',');
  useEffect(()=>{
   const control=new AbortController();setComments([]);setImages([]);setFailedImages([]);setUnavailable(false);
@@ -20,7 +21,7 @@ export function AIEvidenceRail({jobId,references,showEvidence}:{jobId:string;ref
    const sourceComments:SourceComment[]=[],relatedImages:string[]=[];
    for(const result of commentResults)if(result.status==='fulfilled'){sourceComments.push(result.value.comment);relatedImages.push(...result.value.images.map(i=>i.id));}else missing=true;
    setComments(sourceComments);
-   const ids=[...new Set([...imageIds.split(',').filter(Boolean),...relatedImages])].slice(0,4);
+   const ids=[...new Set([...imageIds.split(',').filter(Boolean),...relatedImages])].filter(id=>!excludeImageIds.includes(id)).slice(0,4);
    const imageResults=await Promise.allSettled(ids.map(id=>api<{image:SourceImage}>(`/api/ai/jobs/${jobId}/evidence?image=${encodeURIComponent(id)}`,{signal:control.signal})));
    if(control.signal.aborted)return;
    const sourceImages:SourceImage[]=[];
@@ -28,7 +29,7 @@ export function AIEvidenceRail({jobId,references,showEvidence}:{jobId:string;ref
    setImages(sourceImages);setUnavailable(missing);setLoading(false);
   }
   void load();return()=>control.abort();
- },[jobId,commentIds,imageIds]);
+ },[jobId,commentIds,imageIds,excluded]);
  if(!commentIds&&!imageIds)return null;
  return <aside className="ai-evidence-rail" aria-label="相关原始证据">
   <h3>相关原始证据</h3>

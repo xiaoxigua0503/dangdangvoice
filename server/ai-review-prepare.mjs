@@ -32,7 +32,7 @@ export async function prepareReview(unit,downloadFn,signal) {
  const unique=new Map();for(const i of downloaded){if(!unique.has(i.hash))unique.set(i.hash,{...i,aliases:[],comments:[],occurrences:[]});const rep=unique.get(i.hash);rep.aliases.push(i.id);rep.occurrences.push(...(i.occurrences||[]));rep.comments=[...new Set([...rep.comments,...i.comments])];}
  let quality=null,qualityWarning=null;try{quality=sourceQuality(unit.input.comments,downloaded);}catch{qualityWarning='quality_diagnostics_unavailable';}
  const scope={comments:unit.input.comments.length,substantive:unit.input.comments.filter(c=>!c.data.is_auto&&(c.data.text_full||c.data.text).trim().length>=12).length,defaults:unit.input.comments.filter(c=>c.data.is_auto).length,imageReferences:all.length,uniqueImages:unique.size,unreadImages:unread.length,siteTotal:unit.input.product.site?.total_comment_num??null,denominator:'本次保存快照的评论条目；图片数量按已有地址/成功下载哈希统计；不代表站点评价总量'};
- const input={schemaVersion:4,product:unit.input.product,comments:unit.input.comments,parts:unit.input.parts,scope,unread,images:[...unique.values()].map(({bytes,mime,hash,...ref})=>ref)};
+ const input={schemaVersion:4,product:unit.input.product,comments:unit.input.comments,parts:unit.input.parts,scope,quality,unread,images:[...unique.values()].map(({bytes,mime,hash,...ref})=>ref)};
  const budget=budgetInput(unit.config,input,[...unique.values()]);
  // Capacity failure is explicit: retain ALL immutable sources and enqueue no
  // provider work. Never sample or launch a hidden multi-stage synthesis.

@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 const sources = [
   'ai-engine-version.mjs', 'ai-pipeline.mjs', 'ai-config.mjs', 'ai-jobs.mjs',
   'ai-worker.mjs', 'worker-start.mjs', 'ai-worker-core.mjs', 'ai-provider.mjs', 'ai-images.mjs',
-  'ai-models.mjs','ai-model-runtime.mjs','ai-review.mjs', 'ai-review-jobs.mjs', 'ai-review-prepare.mjs',
+  'ai-models.mjs','ai-model-runtime.mjs','ai-review-visuals.mjs','ai-review.mjs', 'ai-review-jobs.mjs', 'ai-review-prepare.mjs',
 ];
 const hash = createHash('sha256');
 for (const source of sources) {

@@ -194,7 +194,7 @@ export async function runOne({
       markStage("image_download_and_plan");result=await prepareReview(unit,downloadFn,workSignal);
     } else if (cached) {
       cacheHit = true;
-      result=validateReview(cached.result,unit.input);
+      result=validateReview(cached.result,unit.input,image,{cached:true});
     } else {
       markStage('provider');
       // One HTTP call per durable attempt. No in-request fallback/repair loop.
@@ -205,7 +205,7 @@ export async function runOne({
       const response=await inferFn(bodyBudget,unit.input,image,workSignal);
       usage={...usage,...response.usage,delivered:{comments:unit.input.comments.length,images:image.length}};
       markStage('validation');
-      try{result=validateReview(response.result,unit.input);}
+      try{result=validateReview(response.result,unit.input,image);}
       catch(e){rejectedValidation={issues:e.validationIssues||[{code:e.message}],draft:response.result,promptVersion:PROMPT_VERSION};throw e;}
     }
     if (control.signal.aborted) throw new Error("aborted");

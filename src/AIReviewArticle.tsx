@@ -1,8 +1,11 @@
 import {useRef,useState} from 'react';
+import {AIVisualBlocks,visualReferences} from './AIVisualBlocks';
+import type {ReportVisual} from './AIVisualBlocks';
 import {AIEvidenceRail} from './AIEvidenceRail';
 export interface Citation {kind:'comment'|'image'|'metadata';id:string;quote:string|null;visibleText:string|null}
 interface Paragraph {text:string;citations:Citation[];statistics?:string[]}
 export interface ProductReview {
+ visuals?:ReportVisual[];visualsVersion?:number;visualStatus?:'valid'|'partial';visualDiagnostics?:{index:number;code:string;path:string}[];
  summary?:string;headline?:string;considerations?:string[];sourceIds?:string[];
  actualModel?:string|null;actualEndpointHost?:string|null;blocked?:{code:string;unprocessed:{comments:number;images:number}}|null;qualityWarning?:string|null;
  providerAttempts?:{attempt:string;model:string|null;endpointHost?:string;fallbackReason?:string|null;error?:string|null;httpStatus?:number;providerCode?:string;cached?:boolean;skipped?:{model:string;reason:string}[];selection?:{skipped:{model:string;reason:string}[]}}[];
@@ -21,8 +24,12 @@ export function AIReviewArticle({report,jobId,showEvidence}:{report:ProductRevie
  const simple=report.schemaVersion===4;
  const hasArticle=report.hasSynthesis!==false&&(simple?!!report.summary?.trim():!!report.verdict?.text?.trim()&&!!report.paragraphs?.some(p=>p.text?.trim()));
  const citations=[report.verdict,...(report.paragraphs||[]),...(report.imageText||[]),...(report.checks||[])].flatMap(p=>p?.citations||[]);
+ const visuals=report.visualsVersion===1?report.visuals||[]:[];
+ const visualRefs=visualReferences(visuals);
  const references=simple?{comments:(report.sourceIds||[]).filter(id=>id.startsWith('C')),images:(report.sourceIds||[]).filter(id=>id.startsWith('I'))}:{comments:citations.filter(c=>c.kind==='comment').map(c=>c.id),images:citations.filter(c=>c.kind==='image').map(c=>c.id)};
- references.comments=[...new Set(references.comments)];references.images=[...new Set(references.images)];
+ references.comments=[...new Set([...references.comments,...visualRefs.comments])];references.images=[...new Set([...references.images,...visualRefs.images])];
+ const visualImageIds=new Set(visuals.flatMap(v=>v.type==='image_observations'?v.images.map(i=>i.imageId):[]));
+ for(const group of report.quality?.exactImages||[])if(group.some(id=>visualImageIds.has(id)))group.forEach(id=>visualImageIds.add(id));
  const allSources=[...references.comments.map(id=>({kind:'comment' as const,id})),...references.images.map(id=>({kind:'image' as const,id}))];
  const hasEvidence=hasArticle&&(references.comments.length>0||references.images.length>0);
  function refs(items:Citation[]) {return <span className="ai-citations">{items.map((c,i)=><button type="button" key={c.kind+c.id+i} title="查看原始来源" aria-label={`查看${c.kind==='comment'?'评论':c.kind==='metadata'?'商家资料':'图片'}证据 ${i+1}`} onClick={()=>showEvidence(c.kind,c.id)}>{c.kind==='comment'?'评':c.kind==='metadata'?'商':'图'} {i+1}</button>)}</span>}
@@ -47,12 +54,14 @@ export function AIReviewArticle({report,jobId,showEvidence}:{report:ProductRevie
     <div className="ai-reading-main">
      <div className="ai-review-prose">{simple?report.summary?.split(/\n\s*\n|\n/).filter(text=>text.trim()).map((text,i)=><p key={i}>{text}</p>):report.paragraphs?.filter(item=>item.text?.trim()).map((item,i)=>p(item,'p'+i))}</div>
 
+     {report.visualStatus==='partial'&&<p className="ai-warning" role="status">部分可视化未通过结构或来源检查，已省略。文章与其余可视化保留，本次输出仅部分通过检查。</p>}
+     {!!visuals.length&&<AIVisualBlocks visuals={visuals} jobId={jobId} catalog={report.sourceCatalog} duplicateGroups={[...(report.quality?.exactComments||[]),...(report.quality?.nearComments||[])]} showEvidence={showEvidence}/>}
      {simple&&!!report.considerations?.length&&<aside className="ai-review-checks"><h3>购买前确认</h3>{report.considerations.map((text,i)=><p key={i}>{text}</p>)}</aside>}
      {!!report.imageText?.length&&<section className="ai-review-photos" aria-label="图文对照"><h3>评论与图片对照</h3>{report.imageText.map((item,i)=><div className="ai-photo-observation" key={i}>{p(item,'photo'+i)}</div>)}</section>}
      {!!report.checks?.length&&<aside className="ai-review-checks"><h3>购买前确认</h3>{report.checks.map((item,i)=>p(item,'check'+i))}</aside>}
      {!!allSources.length&&<div className="ai-source-strip"><span>相关来源</span>{allSources.slice(0,4).map((source,i)=><button className="chip" key={source.kind+source.id} onClick={()=>showEvidence(source.kind,source.id)}>{source.kind==='comment'?'评':'图'} {i+1}</button>)}<button className="ghost-btn" onClick={()=>sourceDialog.current?.showModal()}>查看全部来源（{allSources.length}）</button></div>}
     </div>
-    {hasEvidence&&<AIEvidenceRail jobId={jobId} references={references} showEvidence={showEvidence}/>}
+    {hasEvidence&&<AIEvidenceRail jobId={jobId} references={references} excludeImageIds={[...visualImageIds]} showEvidence={showEvidence}/>}
    </div>}
   </article>
   <dialog ref={sourceDialog} className="ai-source-dialog" onClick={e=>{if(e.target===e.currentTarget)e.currentTarget.close();}}><div className="source-dialog-head"><h3>相关原始证据</h3><button className="ghost-btn" onClick={()=>sourceDialog.current?.close()}>关闭</button></div><div className="chips" role="tablist" aria-label="来源类型">{(['comments','images'] as const).map(tab=><button className={`chip ${sourceTab===tab?'on':''}`} role="tab" aria-selected={sourceTab===tab} key={tab} onClick={()=>setSourceTab(tab)}>{tab==='comments'?'评论':'图片'}（{references[tab].length}）</button>)}</div><div className="source-grid">{references[sourceTab].map((id,i)=><button className="chip" key={id} onClick={()=>{sourceDialog.current?.close();showEvidence(sourceTab==='comments'?'comment':'image',id);}}>{sourceTab==='comments'?'原始评论':'买家图片'} {i+1}</button>)}</div>{!references[sourceTab].length&&<p>暂无此类来源</p>}</dialog>

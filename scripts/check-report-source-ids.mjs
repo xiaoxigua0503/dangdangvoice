@@ -33,5 +33,5 @@ const body=requestEnvelope(config,input,[]);
 assert.deepEqual(JSON.parse(body.messages[1].content[0].text).allowedSourceIds,payload.allowedSourceIds);
 assert.equal(budgetInput(config,input,[]).payloadBytes,Buffer.byteLength(JSON.stringify(body)));
 assert.equal(JSON.stringify(input),before,'Never mutate immutable historical input');
-assert.equal(PROMPT_VERSION,'ddv-product-summary-17');
+assert.equal(PROMPT_VERSION,'ddv-product-summary-18-visuals-1');
 console.log('Report source-ID mock checks passed: internal/cid/unknown/ambiguous/duplicate/mixed image aliases/dedup/precedence, explicit payload schema, immutable input and exact payload-byte budget. No DB/network/model calls.');
