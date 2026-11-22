@@ -14,7 +14,7 @@ export const numberEnv = (name, fallback, min = 1, max = 1000000) =>
     min,
     Math.min(max, Math.floor(Number(process.env[name]) || fallback)),
   );
-export const PROMPT_VERSION = "ddv-product-summary-16";
+export const PROMPT_VERSION = "ddv-product-summary-17";
 export function aiConfig() {
   const provider = process.env.AI_PROVIDER || "qwen";
   const model = process.env.AI_MODEL || "qwen3.7-flash";

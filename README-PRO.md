@@ -1,3 +1,13 @@
+## Report source-ID contract fix (summary prompt 17)
+
+Read-only inspection of task `ecc381eb-b1ca-4538-a83f-a4d1899f70ca` confirmed that both immutable prepare/review inputs contain internal `comments[].id` (`C0`…`C11`) alongside `comments[].sourceId`, copied from original `row.cid`, and `comments[].data.detail_url`. Specifically, `379237662` maps to `C0` and `379197532` to `C1`; each URL also ends in the corresponding original cid. Both saved invalid-reference drafts (attempts 288/289, qwen3.8-flash) were checked offline: all 8/12 returned IDs respectively have unique task-local mappings. No production rows were changed and no inference was called.
+
+[ai-review.mjs](./server/ai-review.mjs) now supplies explicit `allowedSourceIds` and a descriptive JSON Schema instead of the ambiguous `sourceIds:["实际来源编号"]` example. The report prompt requires exact internal comment/image IDs and forbids cid/product IDs/ordinals/invented IDs. Result shape remains unchanged. Compatibility normalization accepts an original cid only through exactly one matching `comments[].sourceId` entry in that same immutable input. Valid internal IDs (including allowed image aliases/unread-image IDs) take precedence and remain unchanged; unknown/duplicate/ambiguous aliases reject the entire response. There is no text/URL/fuzzy/external lookup, ID dropping, forced empty array or repair call. Deduplication happens only after every reference validates.
+
+Rejected IDs, their `sourceIds` indexes, candidate counts and reasons are bounded in `validationIssues`, which the existing worker stores in private attempt diagnostics; full source text/secrets are not added to default logs. Prompt version is `ddv-product-summary-17` in [ai-config.mjs](./server/ai-config.mjs). The existing source fingerprint automatically changes because it hashes both modified files; the existing cache key includes engine and prompt hashes. No historical input/task/cache is rewritten or automatically re-enqueued. Fallback/models/endpoints/quotas/retry budgets, UI and chatbot files are unchanged.
+
+Targeted offline verification: `node scripts/check-report-source-ids.mjs` ([script](./scripts/check-report-source-ids.mjs)); covers internal IDs, unique cid, unknown IDs, duplicate/ambiguous cid, internal-ID precedence, mixed comments/images/aliases, deduplication, immutable input and exact serialized request-byte budgeting. No DB/network/model calls in this script. Typecheck/build are required for release; no production migration, deployment or data repair is part of this change.
+
 # Free / Pro 与独立 AI 深度分析
 
 > 当前待验证实现为单次图文综合 v4，见下方“当前待验证实现”一节；保留 UI editorial。更早的 batch/repair/综合阶段说明与验证记录仅为历史，不代表本轮已执行验证。
