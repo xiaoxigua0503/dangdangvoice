@@ -58,7 +58,7 @@ export interface JobState {
 }
 export interface CookieItem { s: string; n: string; v: string }
 export interface RelayResp {
-  ok: boolean; action: string; blocked: boolean; code?: string; outcome?:string; stage?:string; httpStatus?:number|null; retryAfterMs?:number; diagnostic?:{networkCode?:string;rows?:number;parsed?:number;parser?:string};
+  ok: boolean; action: string; blocked: boolean; code?: string; outcome?:string; stage?:string; httpStatus?:number|null; retryAfterMs?:number; diagnostic?:{networkCode?:string;rows?:number;parsed?:number;parser?:string;contentType?:string;responseLength?:number|null;responseLengthUnit?:'bytes'|'characters';httpStatus?:number;responseKind?:string;rules?:Record<string,boolean>};
   summary?: Record<string, string | number>;
   items?: CommentRow[];
   fields?: Partial<CommentRow> & { product_name?: string | null; price?: string | null; image?: string | null };
@@ -220,7 +220,8 @@ const ARCHIVE_KEY = ["ddv", "archive", "v1"].join("-") + "-2";
 function absorbLegacyKeys(list: ArchiveEntry[]): ArchiveEntry[] {
   try {
     for (const k of Object.keys(localStorage)) {
-      if (k === ARCHIVE_KEY || !k.startsWith("ddv-") || !k.endsWith("-v1")) continue;
+      // Collection pause/cooldown state is not a legacy archive.
+      if (k === ARCHIVE_KEY || k === QUEUE_KEY || !k.startsWith("ddv-") || !k.endsWith("-v1")) continue;
       const v = localStorage.getItem(k);
       if (!v) continue;
       try {
@@ -310,7 +311,7 @@ export function taskQueueFailure(task:QueuedTask,outcome:string,retryAfterMs=0):
  if(old?.state==='stopped'||old?.state==='paused')return list;
  const t={...task,addedAt:task.addedAt||now,lastTry:now,tries:(task.tries||0)+1,consecutiveBlocked:task.consecutiveBlocked||0,state:'waiting' as QueuedTask['state'],reason:outcome};
  t.nextAt=Math.max(now+retryDelay(t.failures||t.tries,retryAfterMs),task.retryAfterUntil||0);
- if((t.consecutiveBlocked||0)>=2||t.tries>=QUEUE_MAX_TRIES||(t.failures||0)>=COLLECTION_MAX_FAILURES||now-t.addedAt>=COLLECTION_MAX_MS||t.nextAt-t.addedAt>=COLLECTION_MAX_MS||['parse_error','unsupported_response','empty_unconfirmed'].includes(outcome)){t.state='paused';if((t.failures||0)>=COLLECTION_MAX_FAILURES&&t.consecutiveBlocked<2)t.reason='retry_budget';}
+ if((t.consecutiveBlocked||0)>=2||t.tries>=QUEUE_MAX_TRIES||(t.failures||0)>=COLLECTION_MAX_FAILURES||now-t.addedAt>=COLLECTION_MAX_MS||t.nextAt-t.addedAt>=COLLECTION_MAX_MS||['challenge_detected','parse_error','unsupported_response','empty_unconfirmed'].includes(outcome)){t.state='paused';if(outcome!=='challenge_detected'&&(t.failures||0)>=COLLECTION_MAX_FAILURES&&t.consecutiveBlocked<2)t.reason='retry_budget';}
  const next=[t,...list.filter(x=>x.pid!==t.pid||x.ownerId!==t.ownerId)].slice(0,8);try{localStorage.setItem(QUEUE_KEY,JSON.stringify(next));}catch{}return next;
 }
 export function taskQueueStop(pid:string,ownerId?:string){const list=taskQueueList().map(t=>t.pid===pid&&t.ownerId===ownerId?{...t,state:'stopped' as const}:t);try{localStorage.setItem(QUEUE_KEY,JSON.stringify(list));}catch{}return list;}

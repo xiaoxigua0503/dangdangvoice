@@ -1,9 +1,32 @@
 import {load} from 'cheerio';
-export function blockedText(text){
- const t=String(text||'').trimStart();if(!t.startsWith('<'))return false;
- const $=load(t.slice(0,8192));
- return /^(?:Access Denied|访问被拒绝)/i.test($('title').text().trim())||$('script').toArray().some(el=>/aliyun_waf|_waf_/i.test(($(el).attr('src')||'')+$(el).text()));
+// Inspect inert HTML only. JSON is parsed before this classifier is consulted.
+export function classifyHtmlResponse(text){
+ const t=String(text||'').trimStart();
+ if(!t.startsWith('<'))return {kind:'unknown',rules:{html:false}};
+ const $=load(t),title=$('title').text().trim();
+ // Source comments are data, even when they discuss WAF/CAPTCHA or contain scripts.
+ const commentNodes=$('.comment_items,.describe_detail,.describe_long').length>0;
+ const scripts=$('script').toArray(),inline=scripts.map(el=>$(el).attr('src')?'':$(el).text());
+ const scriptText=inline.join('\n');
+ const visible=$.root().clone();visible.find('script,style,template,noscript').remove();
+ const shell=!title&&!$('form,meta[http-equiv="refresh" i]').length&&!visible.text().trim()&&!commentNodes;
+ const rules={html:true,commentNodes,deniedTitle:/^(?:Access Denied|访问被拒绝|访问遭到拒绝)(?:\b|$)/i.test(title),
+  scriptShell:shell,inlineDominant:scriptText.length>t.length*0.8,
+  wafMarker:/aliyun_waf|_waf_/i.test(scriptText),challengeMarker:/captcha|challenge/i.test(scriptText),
+  substantialScript:scriptText.length>=1024,runtimeAccess:/\b(?:document|window|location)\s*(?:\.|\[)|\bcookie\b/i.test(scriptText)};
+ const plain=visible.text().trim();
+ const denied=rules.deniedTitle||(!commentNodes&&/^(?:Access Denied|访问被拒绝|访问遭到拒绝)[.!。\s]*$/i.test(plain));
+ if(denied)return {kind:'access_denied',rules};
+ if(shell&&rules.inlineDominant&&(rules.wafMarker||rules.challengeMarker&&rules.substantialScript&&rules.runtimeAccess))return {kind:'javascript_challenge',rules};
+ return {kind:'ordinary_html',rules};
 }
+export function htmlAccessFailure(text){
+ const {kind,rules}=classifyHtmlResponse(text);
+ if(kind==='javascript_challenge')return {ok:false,outcome:'challenge_detected',blocked:true,code:'challenge_detected',diagnostic:{responseKind:kind,rules}};
+ if(kind==='access_denied')return {ok:false,outcome:'blocked',blocked:true,code:'access_denied',diagnostic:{responseKind:kind,rules}};
+ return null;
+}
+export function blockedText(text){return !!htmlAccessFailure(text);}
 export function commentText($,node){
  if(!node.length)return '';
  const copy=node.clone();
@@ -117,12 +140,11 @@ export function parseProductMeta(bufOrText, pid) {
 
 
 export function parseListResponse(text){
- if(blockedText(text))return {ok:false,outcome:'blocked',blocked:true,code:'access_denied'};
- let d;try{d=JSON.parse(text);}catch{return {ok:false,outcome:'parse_error',blocked:false,code:'invalid_json',diagnostic:{parser:'list-json'}};}
+ let d;try{d=JSON.parse(text);}catch{const failure=htmlAccessFailure(text);if(failure)return failure;const html=classifyHtmlResponse(text);return {ok:false,outcome:html.kind==='ordinary_html'?'unsupported_response':'parse_error',blocked:false,code:html.kind==='ordinary_html'?'unexpected_html':'invalid_json',diagnostic:{parser:'list-json',responseKind:html.kind,rules:html.rules}};}
  let list=d?.data?.list;
  if(typeof list==='string'){try{list=JSON.parse(list);}catch{return {ok:false,outcome:'parse_error',blocked:false,code:'invalid_list_json'};}}
  if(!list||typeof list!=='object'||Array.isArray(list)||typeof list.html!=='string')return {ok:false,outcome:'unsupported_response',blocked:false,code:'unrecognized_list_schema'};
- if(blockedText(list.html))return {ok:false,outcome:'blocked',blocked:true,code:'access_denied'};
+ // A recognized JSON envelope remains comment data, not a top-level challenge page.
  const summary=list.summary&&typeof list.summary==='object'&&!Array.isArray(list.summary)?list.summary:{},items=parseListFragment(list.html),$=load(list.html);
  const numeric=v=>(typeof v==='number'||typeof v==='string'&&v.trim()!=='')&&Number.isFinite(Number(v))&&Number(v)>=0&&Number.isInteger(Number(v));
  const validTotal=numeric(summary.total_comment_num),validPages=numeric(summary.pageCount);
@@ -137,4 +159,4 @@ export function parseListResponse(text){
  return {ok:['completed','partial','empty_confirmed','defaults_only'].includes(outcome),outcome,blocked:false,summary,items,code:outcome==='empty_unconfirmed'?'empty_without_confirmation':undefined,diagnostic:{rows,parsed:items.length}};
 }
 export function retryAfterMs(value,now=Date.now()){if(!value)return 0;const n=Number(value);return Number.isFinite(n)?Math.max(0,n*1000):Math.max(0,Date.parse(value)-now)||0;}
-export function relayError(error){const status=error?.httpStatus;const code=error?.code||error?.cause?.code;const outcome=status===429?'rate_limited':status===403?'blocked':status?'upstream_error':error?.name==='TimeoutError'||/TIMEOUT/.test(code||'')?'timeout':error?.name==='AbortError'?'cancelled':'network_error';return {ok:false,blocked:outcome==='blocked',outcome,httpStatus:status||null,code:status?`upstream_http_${status}`:outcome,retryAfterMs:error?.retryAfterMs||0,diagnostic:typeof code==='string'&&/^[A-Z0-9_]{1,60}$/.test(code)?{networkCode:code}:undefined};}
+export function relayError(error){const status=error?.httpStatus;const code=error?.code||error?.cause?.code;const outcome=status===429?'rate_limited':status===403?'blocked':status?'upstream_error':error?.name==='TimeoutError'||/TIMEOUT/.test(code||'')?'timeout':error?.name==='AbortError'?'cancelled':'network_error';return {ok:false,blocked:outcome==='blocked',outcome,httpStatus:status||null,code:status?`upstream_http_${status}`:outcome,retryAfterMs:error?.retryAfterMs||0,diagnostic:{contentType:error?.contentType||undefined,responseLength:null,...(typeof code==='string'&&/^[A-Z0-9_]{1,60}$/.test(code)?{networkCode:code}:{})}};}

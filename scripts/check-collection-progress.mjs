@@ -16,7 +16,7 @@ assert.equal(parseListResponse(list({total_comment_num:79,total_auto_count:79,pa
 assert.equal(parseListResponse(list({total_comment_num:0,pageCount:0})).outcome,'empty_confirmed');
 assert.equal(parseListResponse(list({total_comment_num:79,pageCount:0})).outcome,'empty_unconfirmed');
 assert.equal(parseListResponse('bad json').outcome,'parse_error');assert.equal(parseListResponse('{}').outcome,'unsupported_response');
-assert.equal(parseListResponse('<html><script>var aliyun_waf=1</script></html>').outcome,'blocked');
+assert.equal(parseListResponse('<html><script>'+('/* padding */'.repeat(100))+'var aliyun_waf=1</script></html>').outcome,'challenge_detected');
 assert.equal(parseListResponse(list({total_comment_num:0,pageCount:0},'<form>你尚未登录</form>')).outcome,'parse_error');
 assert.equal(parseListResponse(list({total_comment_num:2,pageCount:1},row()+'<div class="comment_items">unknown</div>')).outcome,'partial');
 assert.equal(relayError({name:'TimeoutError'}).outcome,'timeout');assert.equal(relayError({httpStatus:429,retryAfterMs:90000}).outcome,'rate_limited');assert.equal(relayError({httpStatus:503}).outcome,'upstream_error');assert.equal(relayError({cause:{code:'ECONNRESET'}}).outcome,'network_error');

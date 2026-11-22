@@ -201,10 +201,12 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
     const control=new AbortController();collectionController.current=control;
     let deadline=false;const startedAt=task.addedAt||Date.now();task={...task,addedAt:startedAt};
     const deadlineTimer=setTimeout(()=>{deadline=true;control.abort();},Math.max(1,COLLECTION_MAX_MS-(Date.now()-startedAt)));
-    const check=()=>{if(control.signal.aborted||cancelRef.current||accountEpoch.current!==taskEpoch||ownerRef.current?.id!==taskOwner.id||automatic&&!canResume(taskQueueList(),pid,taskOwner.id))throw new DOMException('Cancelled','AbortError');};
+    let challengeStage:string|undefined;
+    const ensureActive=()=>{if(control.signal.aborted||cancelRef.current||accountEpoch.current!==taskEpoch||ownerRef.current?.id!==taskOwner.id||automatic&&!challengeStage&&!canResume(taskQueueList(),pid,taskOwner.id))throw new DOMException('Cancelled','AbortError');};
+    const check=()=>{ensureActive();if(challengeStage)throw Object.assign(new Error('challenge_detected'),{name:'CollectionChallenge'});};
     const leaseToken=crypto.randomUUID();let leased=false;
     const lease=(action:'start'|'renew'|'stop'|'complete')=>api('/api/collection/lease',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action,pid,token:leaseToken}),signal:AbortSignal.timeout(10000)});
-    const request=async(action:'prime'|'list'|'detail',payload:Record<string,unknown>)=>{check();if((task.retryAfterUntil||0)>Date.now()){push('当当要求暂缓请求，等待 Retry-After 指定时间');await wait(task.retryAfterUntil!-Date.now());}check();const result=await relay(action,{...payload,pid,leaseToken},control.signal);check();if(result.retryAfterMs){task.retryAfterUntil=Date.now()+result.retryAfterMs;setQueue(taskQueueCooldown(task,task.retryAfterUntil));}if(!result.ok){task.failures=(task.failures||0)+1;}task.consecutiveBlocked=result.blocked?(task.consecutiveBlocked||0)+1:0;return result;};
+    const request=async(action:'prime'|'list'|'detail',payload:Record<string,unknown>)=>{check();if((task.retryAfterUntil||0)>Date.now()){push('当当要求暂缓请求，等待 Retry-After 指定时间');await wait(task.retryAfterUntil!-Date.now());}check();const result=await relay(action,{...payload,pid,leaseToken},control.signal);check();if(result.retryAfterMs){task.retryAfterUntil=Date.now()+result.retryAfterMs;setQueue(taskQueueCooldown(task,task.retryAfterUntil));}if(!result.ok){task.failures=(task.failures||0)+1;}task.consecutiveBlocked=result.blocked?(task.consecutiveBlocked||0)+1:0;if(outcomeOf(result)==='challenge_detected'){challengeStage=action;check();}return result;};
     const wait=(ms:number)=>new Promise<void>((resolve,reject)=>{check();const end=()=>{clearTimeout(timer);reject(new DOMException('Cancelled','AbortError'));};const timer=setTimeout(()=>{control.signal.removeEventListener('abort',end);resolve();},ms);control.signal.addEventListener('abort',end,{once:true});});
     const onQueueChange=()=>{const entry=taskQueueList().find(t=>t.pid===pid&&t.ownerId===taskOwner.id);if(automatic&&!entry||entry?.state==='stopped'||entry?.state==='paused'){cancelRef.current=true;control.abort();}};
     window.addEventListener('storage',onQueueChange);
@@ -434,6 +436,31 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
         else setQueue(taskQueueStop(pid,taskOwner.id));
         if(deskSwitch&&genRef.current===myGen)setRunPid(null);patch({status:'cancelled',phase:'done'});push(deadline?'已达到采集时间上限':'已停止采集，不再自动排队');return false;
       }
+      if(challengeStage){
+        // Persist the pause before any local analysis/save. No crawler fallback or retry.
+        lastOutcome='challenge_detected';retryLater();clearInterval(leaseHeartbeat);
+        const message=issueText(lastOutcome);
+        site={...site,metadata_status:site?.metadata_status||metadataStatus,
+          [`${challengeStage==='prime'?'metadata':challengeStage}_status`]:'challenge_detected',
+          collection_outcome:byCid.size?'partial':'challenge_detected'};
+        const scope=`已保留 ${byCid.size} 条评论，已读取 ${j.pages_done} 页；${challengeStage==='detail'?'部分评论详情尚未获取':challengeStage==='prime'?'商品资料尚未完整获取，后续采集已停止':'后续列表及详情尚未获取'}。`;
+        const analysis:Analysis={site,total:byCid.size,meaningful:0,auto_reviews:0,auto_share:0,image_reviews:0,avg_score:null,
+          labels:{pos:0,neu:0,neg:0},pos_rate:0,neg_rate:0,score_hist:{},themes:[],top_neg_themes:[],pos_words:[],neg_words:[],
+          red_flags:[],red_flag_count:0,variants:[],trend:[],examples_pos:[],examples_neg:[],note_partial:message+scope+'评论已保留，本地统计尚未完成。'};
+        const retained:CommentRow[]=[...byCid.values()].map(c=>({...c,cid:c.cid??null,text:c.text||'',score:c.score??null,
+          date:c.date??null,variant:c.variant??null,user:c.user??null,level:c.level??null,has_img:!!c.has_img}));
+        let saved={analysis,comments:retained};
+        // Preserve raw inputs even if the deterministic analysis endpoint is unavailable.
+        const retain=()=>{const prod=prodOf(saved.analysis);archiveSave(prod,saved.comments);setArchive(archiveList());
+          if((gentle?!productRef.current:genRef.current===myGen)){setProduct(prod);setComments(saved.comments);}return prod;};
+        ensureActive();retain();
+        if(byCid.size){try{const result=await analyzeServer(retained,meta.name,site,control.signal);ensureActive();result.analysis.note_partial=message+scope;saved=result;}catch{/* raw snapshot already retained */}}
+        if(control.signal.aborted||cancelRef.current||accountEpoch.current!==taskEpoch||ownerRef.current?.id!==taskOwner.id){setQueue(taskQueueStop(pid,taskOwner.id));patch({status:'cancelled',phase:'done'});if(deskSwitch&&genRef.current===myGen)setRunPid(null);return false;}
+        const prod=retain();void saveCloud(prod,saved.comments,taskOwner,taskEpoch);
+        if(deskSwitch&&genRef.current===myGen){setRunPid(null);setCollectErr(message+scope);}
+        patch({status:'error',phase:'done',error:message,comments_done:byCid.size});push(message+scope);
+        return false;
+      }
       if (e instanceof PassRequired) { setGateInfo({ gated: true, unlocked: false }); setJob(null); return false; }
       const msg = String((e as Error)?.message || e).slice(0, 300);
       lastOutcome='upstream_error';task.failures=(task.failures||0)+1;retryLater();
@@ -451,7 +478,7 @@ export function App({sessionUser,onSessionChange}:{sessionUser:User;onSessionCha
     if (!norm.ok) { setCollectErr(norm.msg); logEvent(`投递被拒：${norm.msg}`); return; }
     if(!ownerRef.current?.verified){pendingTask.current=()=>submitTask(u,mp,md);setAccountOpen(true);document.getElementById('account')?.scrollIntoView();setCollectErr('请登录并验证邮箱，随后将继续本次采集');return;}
     if(gateRequirementRef.current){pendingTask.current=()=>submitTask(u,mp,md);setCollectErr('站点管理员已启用采集口令，请在账户区输入站点口令');setAccountOpen(true);return;}
-    const existing=taskQueueList().find(t=>t.pid===norm.pid&&t.ownerId===ownerRef.current?.id);if((existing?.retryAfterUntil||0)>Date.now()){setCollectErr(`当当要求等待 ${Math.ceil((existing!.retryAfterUntil!-Date.now())/1000)} 秒后再试`);return;}
+    const existing=taskQueueList().find(t=>t.pid===norm.pid&&t.ownerId===ownerRef.current?.id);const cooldown=Math.max(existing?.retryAfterUntil||0,existing?.reason==='challenge_detected'?existing.nextAt||0:0);if(cooldown>Date.now()){setCollectErr(`当当要求等待 ${Math.ceil((cooldown-Date.now())/1000)} 秒后再试`);return;}
     setQueue(taskQueueRemove(norm.pid,ownerRef.current.id));
     const iq = ++intentSeqRef.current;
     newDeskIntent();

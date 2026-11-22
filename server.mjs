@@ -28,7 +28,7 @@ const jitter = (lo, hi) => lo + Math.random() * (hi - lo);
 // [store] — jobs/products maps, CSV/JSON import, CSV export builder
 
 // ---------------------------------------------------------------- scraper
-import {blockedText,parseListResponse,parseDetailHtml,parseProductMeta,retryAfterMs,relayError} from "./server/collection-parser.mjs";
+import {htmlAccessFailure,parseListResponse,parseDetailHtml,parseProductMeta,retryAfterMs,relayError} from "./server/collection-parser.mjs";
 
 
 
@@ -108,9 +108,11 @@ async function scopedFetch(jar, url, opts = {}) {
   if (cookie) headers.cookie = cookie;
   const res = await fetch(url, { headers, redirect: "follow", signal: opts.signal?AbortSignal.any([opts.signal,AbortSignal.timeout(opts.timeout ?? 15_000)]):AbortSignal.timeout(opts.timeout ?? 15_000) });
   absorbCookies(jar, res, host);
-  if (!res.ok) { await res.body?.cancel(); throw Object.assign(new Error('upstream_http_error'), {code:`upstream_http_${res.status}`,httpStatus:res.status,retryAfterMs:retryAfterMs(res.headers.get('retry-after'))}); }
-  if (opts.bytes) return Buffer.from(await res.arrayBuffer());
-  return await res.text();
+  const contentType=(res.headers.get('content-type')||'').split(';')[0].trim().toLowerCase().slice(0,120);
+  if (!res.ok) { await res.body?.cancel(); throw Object.assign(new Error('upstream_http_error'), {code:`upstream_http_${res.status}`,httpStatus:res.status,retryAfterMs:retryAfterMs(res.headers.get('retry-after')),contentType}); }
+  const data=opts.bytes?Buffer.from(await res.arrayBuffer()):await res.text();
+  opts.onResponse?.({httpStatus:res.status,contentType,responseLength:data.length,responseLengthUnit:opts.bytes?'bytes':'characters',retryAfterMs:retryAfterMs(res.headers.get('retry-after'))});
+  return data;
 }
 
 function listUrlFor(pid, pageIndex) {
@@ -594,14 +596,15 @@ async function handleApi(url, req, res) {
 
     const control=new AbortController();if(req.aborted||res.destroyed)control.abort();
     req.once('aborted',()=>control.abort());res.once('close',()=>{if(!res.writableEnded)control.abort();});
-    const fetchStep=(url,opts={})=>scopedFetch(jar,url,{...opts,signal:control.signal});
-    const respond=result=>{if(action==='list'||action==='detail'){lastEgress[action]=result.blocked?'waf':result.ok?'clear':'unknown';lastEgress.at=Date.now();}return json(res,200,{action,stage:action,...result,cookies:jarToList(jar)});};
+    let upstream={};
+    const fetchStep=(url,opts={})=>scopedFetch(jar,url,{...opts,signal:control.signal,onResponse:info=>{upstream=info;}});
+    const respond=result=>{result={...result,retryAfterMs:result.retryAfterMs??upstream.retryAfterMs,httpStatus:upstream.httpStatus??result.httpStatus,diagnostic:{...upstream,...result.diagnostic}};if(!result.ok)console.warn('relay_response '+JSON.stringify({stage:action,outcome:result.outcome,code:result.code,...result.diagnostic}));if(action==='list'||action==='detail'){lastEgress[action]=result.blocked?'waf':result.ok?'clear':'unknown';lastEgress.at=Date.now();}return json(res,200,{action,stage:action,...result,cookies:jarToList(jar)});};
     if(action==='prime'){
       const pid=extractPid(body.url||body.pid);if(!pid)return json(res,422,{error:'no_product_id'});
       try{
         const bytes=await fetchStep(`https://product.dangdang.com/${pid}.html`,{referer:'https://www.dangdang.com/',bytes:true,timeout:18000});
         const html=new TextDecoder('gb18030').decode(bytes);
-        if(blockedText(html))return respond({ok:false,outcome:'blocked',blocked:true,code:'access_denied',meta:{},pid,httpStatus:200});
+        const failure=htmlAccessFailure(html);if(failure)return respond({...failure,meta:{},pid,httpStatus:200});
         const meta=parseProductMeta(bytes,pid);
         return respond({ok:!!meta.name,outcome:meta.name?'completed':'parse_error',blocked:false,code:meta.name?undefined:'metadata_missing',meta,pid,httpStatus:200});
       }catch(e){return respond({...relayFailure(e,action,pid),meta:{},pid});}
@@ -613,7 +616,7 @@ async function handleApi(url, req, res) {
     }
     if(action==='detail'){
       const du=String(body.detailUrl||'');if(!DETAIL_ALLOWED.test(du))return json(res,422,{error:'detail_url_not_allowed'});
-      try{const txt=await fetchStep(du,{timeout:15000});if(blockedText(txt))return respond({ok:false,outcome:'blocked',blocked:true,code:'access_denied',httpStatus:200});const fields=parseDetailHtml(txt);return respond({ok:!!fields.content_recognized,outcome:fields.text_full?'completed':fields.content_recognized?'partial':'parse_error',blocked:false,code:fields.content_recognized?undefined:'comment_content_missing',fields,httpStatus:200});}
+      try{const txt=await fetchStep(du,{timeout:15000});const failure=htmlAccessFailure(txt);if(failure)return respond({...failure,httpStatus:200});const fields=parseDetailHtml(txt);return respond({ok:!!fields.content_recognized,outcome:fields.text_full?'completed':fields.content_recognized?'partial':'parse_error',blocked:false,code:fields.content_recognized?undefined:'comment_content_missing',fields,httpStatus:200});}
       catch(e){return respond(relayFailure(e,action));}
     }
 
