@@ -1,79 +1,100 @@
 # 问问 DiDi · product snapshot Q&A
 
-Implemented on `fix/ai-flow-node-pg`: Node 22+, PostgreSQL, existing verified account/Pro entitlement, immutable `ai_jobs` / `ai_comments` / `ai_images` and React. No QwenWork Pages runtime assumptions. The report prompt, schema, model configuration, report worker and generation pipeline are unchanged.
+Current implementation: Node 22+, PostgreSQL and persistent VM chat service **`dangdangvoice-chat-worker`**, with its own durable queue. Entry remains [chat-worker-start.mjs](./server/chat-worker-start.mjs). Report workers, report prompt/schema/pipeline, authentication, account entitlements, saved reports and collection workflows are unchanged. No QwenWork Pages runtime assumptions.
 
-## Storage and HTTP
+## Conversations, compatibility and API
 
-[009_product_chat.sql](./migrations/009_product_chat.sql) adds conversations, ordered request/message pairs, provider attempts and chat-only model cooldowns. A conversation binds owner + report job + run + immutable input hash + report hash, retaining a copy of its report context. Each request row retains the complete user message and, when successful, its assistant text and typed references. Failed/cancelled messages remain stored. Deleting the owning account/run/job cascades to its chat.
+[009_product_chat.sql](./migrations/009_product_chat.sql) stores owner + report job + run + immutable input hash + report hash, report reference context, ordered request/message pairs, attempts and chat-only cooldowns. [010_chat_sessions_evidence.sql](./migrations/010_chat_sessions_evidence.sql) adds explicit sessions, selected image IDs and optional purchase purpose. Migration 010 assigns every existing message to its original conversation's initial session without rewriting questions, answers, references or reports. New sessions keep all previous sessions readable. Total turns per report, daily quota and rate limits still apply across sessions.
 
-- `GET /api/ai/jobs/:job/chat`: reads the current report's conversation without creating one or invoking inference.
-- `POST /api/ai/jobs/:job/chat`: `{requestId: UUID, question, useImages: boolean}`. Creates only durable queue state. Identical replays resolve the original request; reuse with different content/owner/job is rejected. Same-conversation active requests are prevented by a partial unique index; owner row locking serializes submissions and chat quota checks.
-- `POST /api/ai/jobs/:job/chat/:requestId/cancel`: cancels pending/running work. Repeated cancellation is harmless. A cancelled running request retains its processing slot until worker acknowledgment or lease expiry.
+- `GET /api/ai/jobs/:job/chat[?session=UUID]`: reads current-report chat, session list, saved image catalog and reference provenance. Without a session parameter, reads the latest session. Does not create a conversation or inference.
+- `POST .../chat/preflight`: `{requestId: UUID, question, imageIds: string[], purpose, sessionId?}`. Validates owner/snapshot images, complete input and primary-model budget, without creating any conversation, request, quota usage or model call.
+- `POST .../chat`: same body. Repeats preflight in the submission transaction before queueing. Identical replay returns the original request, including after cancellation. Conflicting reuse is rejected. Client URLs are never accepted; image IDs must belong to the owned report snapshot. Unknown/unavailable/duplicate/excessive selected images fail, never silently disappear.
+- `POST .../chat/sessions`: `{sessionId: UUID}` explicitly creates an empty session with no inference. Idempotent. No automatic session creation on report/history reads. New session retains the composer draft; sessions remain selectable.
+- `POST .../chat/:requestId/cancel`: cancels pending/running work. A cancelled running request holds its slot until worker acknowledgment or lease expiry.
+- `GET .../chat/evidence?comment=ID|image=ID`: chat-only provenance viewer. Reports keep their original viewer and evidence behavior.
 
-All endpoints pass through existing fixed-origin/CSRF checks and verified effective-Pro authentication; database owner checks apply to every read/write. Free users retain the existing upgrade dialog. Chat has its own rate/turn/concurrency/request limits and never updates report quotas, attempts, cache, cooldowns or model cursor. HTTP does not do inference. No conversation is stored in localStorage. Chat errors do not modify reports.
+All endpoints reuse fixed-origin/CSRF checks, verified effective-Pro authentication and owner checks. The Free upgrade mechanism is unchanged. A unique active-request index and owner row lock preserve order/concurrency and idempotency. Chat never writes report quotas, attempts, cache, cooldowns, model cursor or report content. No localStorage chat source. Changing product/account/snapshot remounts chat and aborts old UI requests; source loads have their own abort protection.
 
-## Worker, evidence and budget
+New requests use `product-chat-v2`; new workers claim both v1 and v2. Old chat workers filter for v1 and cannot claim the new explicit-image/citation protocol. Existing v1 requests and messages remain supported. Pending legacy v1 image requests retain their original configured selection behavior; newly submitted turns always persist explicit image IDs. Updating Web and the existing chat service together is required.
 
-Run [chat-worker-start.mjs](./server/chat-worker-start.mjs) as a **separate supervised persistent process**, using the same environment-loading rules and worker direct PostgreSQL connection as [worker-start.mjs](./server/worker-start.mjs). The separate tables and `product-chat-v1` protocol prevent old report workers from claiming chat. `AI_WORKER_JOB_ID`, when set, also scopes chat to that report job. Report worker startup/readiness is unchanged; chat startup checks migration 009 separately.
+## Natural conversation and source awareness
 
-The chat worker uses the existing ordered operator model allowlist, official/documented capacity configuration, model identity and provider error classification. It only falls back for the existing exact provider error pairs, to a model still allowed by the current configuration, with the identical payload. It does not retry ambiguous network failures, invalid output or cancelled/interrupted requests. Each dispatch intent is recorded before the provider call. Running leases are renewed every two seconds; expiry becomes a visible failure and is never automatically dispatched again. Cancellation aborts the fetch/response stream when possible; a provider may already have consumed input before receiving cancellation. No automatic replay claims an exactly-once guarantee at the remote provider.
+The [chat-only prompt](./server/ai-chat-context.mjs) handles greetings, ordinary typos/homophones and follow-up context naturally, without an intent-regex patch list. Clear “你还在马” intent is treated as “你还在吗”; genuinely ambiguous intent gets a short clarification. Greetings need no product citation. Language follows the user's current message. Optional purchase purpose is `unspecified` (default), `beginner`, `research`, `gift` or `collection`; changing it or selecting an image never sends a question or invokes AI.
 
-The [chat prompt, schema and budget](./server/ai-chat-context.mjs) are separate from reports. Every question sends **all immutable snapshot comments** or fails the conservative budget check before calling a model. Metadata, report and selected completed history are included as untrusted data. Reports/history are reference context, never primary evidence. No tools or crawling are provided. Answers follow the question's language, defaulting to simplified Chinese.
+The input distinguishes:
 
-Text questions send no image pixels by default. The explicit image option ranks already stored images by question overlap with their linked original comments, then uses at most the configured image count. The worker reads only previously validated stored bytes, rechecks hash and reuses the existing `validateImage` MIME/byte/pixel/dimension validation, and uses the existing provider-compatible Base64 image representation. It never downloads/crawls on chat. This ranking is a relevance heuristic, not an exhaustive visual search. All comment–image links and image availability are included; only images actually transmitted can be cited. The displayed scope gives all-comment coverage, actual selected/total image count and included/omitted history counts. Even if the selected count equals the image total, the UI conservatively labels the selection. Unavailable images are not represented as seen.
+- `metadata`: unverified seller information.
+- `comments`: original buyer comments, preserving text, detail URL, actual variant and source product ID when extractable from the existing URL.
+- `reportReference`: explicitly marked previous AI output, not original evidence.
+- `history`: previous AI answers with their planned/confirmed image scope where available; never self-authenticating original evidence. Legacy unknown scope remains unknown.
+- Current images: exactly the selected saved pixels attached this turn; image catalog/URLs alone are not visual observations.
 
-Only the latest configured number of completed history turns goes to the model; every message stays in PostgreSQL and remains readable. Oversized history/source/context is rejected rather than silently truncated. The UTF-8 byte token upper bound, framing reserve, documented image token upper bound, output tokens, exact serialized request bytes, image limits and Data URI bytes are checked against both the chat cap and confirmed model capacity. Unknown model capacity fails closed. This is conservative budgeting, not an exact tokenizer.
+With zero current images, the prompt prohibits “图片展示了…” as a fresh observation. Reusing an old report's description must be attributed, e.g. “此前报告提到……，本轮未重新查看图片”. Earlier AI image descriptions cannot verify themselves; reselect the original image to inspect it. No semantic wording-regex validator or whole-answer repair was added. These are prompt/source-contract protections; real model adherence remains unverified.
 
-Responses are strict JSON `{text, references:[{type:'comment'|'image', id}]}`. IDs are validated against the exact input, then again against the owned snapshot at read time. React renders plain text. References call the existing comment/image evidence dialog; viewer behavior is unchanged. This validates membership, not the semantic correctness of every model statement. Account/report/snapshot changes remount chat and abort its UI requests; cancelled/late worker output cannot commit over another turn/report. Default worker logs contain readiness only, no full conversations, provider bodies or credentials. Actual model, usage and sanitized failures are stored server-side.
+Dangdang may group variants. A comment for another product ID is **not automatically wrong**. Chat preserves `targetProductId`, `sourceProductId`, `detailUrl`, `variant` and displays “可能为其他版本／版本未确认” or “版本未确认”. Neither matching IDs alone nor a nonempty variant string proves an exact edition mapping. Shared content experiences may inform cautious guidance; an unconfirmed variant cannot establish sprayed edges, signatures, cover material, gifts or packaging of the currently sold special edition. No version mapping or crawling is invented. These badges are restricted to chat context and chat's viewer.
 
-## Configuration
+All source/user text is untrusted and cannot override system instructions or request tools/secrets. There are no crawling/tools in the chat worker.
 
-All new settings are server-only; examples are in [.env.example](./.env.example). No provider/model/endpoint/key setting is added or changed.
+## Explicit images, citations and compact UI
+
+The picker shows already stored thumbnails, an exact selected count and up to four images (or a smaller configured chat limit). Selection order/IDs are preserved. “问问 DiDi” on a thumbnail or chat image viewer puts that image and a suggested question into the composer **without sending it**. Available bytes are read from PostgreSQL, hash checked, and passed through the existing safe `validateImage` MIME/byte/dimension/pixel validator. No new download occurs and report image limits do not change.
+
+New answers are strict JSON `{text, references:[{citation:1, type:'comment'|'image', id}]}`. Each `[n]` maps to an explicitly stored source; duplicate sources, conflicting numbers, unknown markers and invalid IDs fail validation rather than triggering repair. Only current comments/current transmitted images may be cited. IDs are checked again on reads. The renderer supports line breaks and simple lists, with React text nodes and citation buttons, no raw HTML. Existing messages without a stored numeric mapping show clearly named source buttons; their old `[1]` text is not guessed to mean the first reference. Repeated use of one citation does not add duplicate footer buttons.
+
+Header is “正在讨论：《商品名》”. Per-turn counts, history window, purpose, model, UUID and source-version details live in “本轮依据”. Missing/unreadable images, source limitations and budget errors remain directly visible. Planned input is distinguished from confirmed delivery: failures/legacy scope do not claim delivery. Mock delivery is explicitly labeled as mock, never as a real model receiving images. Stop/retry, uncertain-submit idempotency, Enter/Shift+Enter and composition handling remain in place.
+
+## Budget investigation and preflight
+
+The previous budget code does **not** tokenize base64 as text or count images twice. History contains questions/answers, not repeated complete snapshots/reports. The separate default chat ceiling is **100,000** versus the repository's documented primary-model **1,000,000** context. The documented conservative per-image maximum is **16,386**; four images reserve **65,544**. Framing reserves 8,192 and output defaults to 2,048, leaving **24,216** for all text, including prompt, full comments, report and history. A 78-comment/6-history-turn/4-image input can therefore exceed the chat cap while fitting the model's context. Exact production payload/environment was not accessed, so the specific historical request's budget cannot be reconstructed from those counts alone.
+
+No limit was raised and no model/endpoint/key was changed. Budget now reports distinct causes: unverified model configuration, chat context cap, model context cap, request bytes, image count, single-image Data URI size and output configuration. `chatBudget` exposes text bytes, single-count image reserve, framing, output, request bytes and both context ceilings. Base64 contributes only to exact HTTP request bytes. UTF-8 byte token estimates are intentionally conservative, not an exact tokenizer. Unknown limits fail closed.
+
+Preflight runs before enqueue **and** before model dispatch. A capacity problem never selects another model or silently removes comments, chosen images or history. User can deselect specific images or explicitly start a new session while preserving the draft and all stored history. The configured window (default latest 8 completed turns in that session) is disclosed before send and in each turn's basis; omitted older turns remain stored/readable. All immutable comments are always included or the request is rejected. Source/report sample limitations remain visible. No conclusion about all site comments may be drawn from a snapshot subset.
+
+Existing fallback remains restricted to the operator's configured allowlist and exact existing provider error classification. A provider failure may switch only under that bounded policy with identical input. Ambiguous network failures, invalid output, cancellation and expired leases are not automatically redispatched. Dispatch intent is persisted before each provider call; lease renewal checks account entitlement every two seconds. Cancellation aborts transport when possible; the provider may already have consumed input. Actual model, usage and sanitized failure are stored server-side; default logs omit conversation contents, credentials and raw provider responses.
+
+## Configuration (unchanged defaults)
+
+All settings are server-only, in [.env.example](./.env.example); no new environment variable is required.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AI_CHAT_WORKER_ENABLED` | `false` | Explicit chat inference opt-in |
-| `AI_CHAT_CONCURRENCY` | `1` | Database-wide running chat ceiling across worker processes |
-| `AI_CHAT_USER_MAX_ACTIVE` | `1` | Pending/running/stopping turns per owner |
-| `AI_CHAT_MAX_QUESTION_CHARS` | `2000` | Server question length limit |
-| `AI_CHAT_MAX_TURNS` | `60` | Stored turns per report conversation |
-| `AI_CHAT_DAILY_TURNS` | `100` | Submitted turns per owner per rolling 24 hours |
-| `AI_CHAT_RATE_PER_15_MIN` | `20` | Accepted new turns per owner per 15-minute window |
-| `AI_CHAT_HISTORY_TURNS` | `8` | Latest completed turns sent, all others retained |
-| `AI_CHAT_CONTEXT_TOKENS` | `100000` | Conservative input + output token upper-bound cap |
-| `AI_CHAT_OUTPUT_TOKENS` | `2048` | Response token cap |
-| `AI_CHAT_MAX_IMAGES` | `4` | Saved-image selection maximum when explicitly requested |
-| `AI_CHAT_MAX_PROVIDER_REQUESTS` | `3` | Total dispatches including allowlisted fallback per turn |
+| `AI_CHAT_CONCURRENCY` | `1` | DB-wide running chat ceiling |
+| `AI_CHAT_USER_MAX_ACTIVE` | `1` | Pending/running/stopping owner turns |
+| `AI_CHAT_MAX_QUESTION_CHARS` | `2000` | Question length |
+| `AI_CHAT_MAX_TURNS` | `60` | Total stored turns across report sessions; also session-count ceiling |
+| `AI_CHAT_DAILY_TURNS` | `100` | Rolling 24-hour owner submissions |
+| `AI_CHAT_RATE_PER_15_MIN` | `20` | Accepted owner turns per window |
+| `AI_CHAT_HISTORY_TURNS` | `8` | Latest completed turns sent in selected session |
+| `AI_CHAT_CONTEXT_TOKENS` | `100000` | Conservative input + output cap |
+| `AI_CHAT_OUTPUT_TOKENS` | `2048` | Output cap |
+| `AI_CHAT_MAX_IMAGES` | `4` | Explicit image maximum, clamped to 1–4 for new turns |
+| `AI_CHAT_MAX_PROVIDER_REQUESTS` | `3` | Total bounded dispatch/fallback budget |
 
-Each chat worker process runs one turn at a time; multiple supervised instances may run up to the database-wide chat ceiling. These slots are independent of report-worker slots.
+## Future VM update — not performed
 
-## Future VM update (not performed)
+Use the existing release/backup procedure, private environment/configuration, database and service identities. Apply the normal explicit `npm run migrate` with the VM's existing environment, which adds unapplied migration **010**, never in an HTTP request. Build the Web release, then update Web and the existing **`dangdangvoice-chat-worker`** together so v2 requests reach a v2-capable worker. Retain its existing runtime user, working directory, Node command, environment file, restart policy and direct PostgreSQL connection. No new service is needed. The chat command remains `node server/chat-worker-start.mjs` / `npm run ai:chat-worker`; report service remains unchanged.
 
-1. Back up PostgreSQL using the existing operations procedure. Install the reviewed source/dependencies into the existing release directory; retain the current private environment, database, SMTP, model allowlist and keys. No bootstrap/account or password commands are needed.
-2. Run the existing explicit migration command `npm run migrate` **once**, with the VM's existing private environment loaded. It applies only unapplied migrations, including 009. Do not run migrations in HTTP or point a development command at production accidentally.
-3. Build the reviewed client (`npm run build`) and restart the existing Web service using its actual service name/configuration. No concrete systemd unit names are committed in this repository, so none are assumed here. The existing report service continues using `node server/worker-start.mjs` unchanged.
-4. Add a supervised chat service by copying the existing worker service's runtime user, working directory, Node binary, private `EnvironmentFile`, restart policy and direct database configuration. Change only its command to `node server/chat-worker-start.mjs` (or `npm run ai:chat-worker`). Keep `AI_CHAT_WORKER_ENABLED=false` for readiness checks. Do not run this command inside the HTTP handler.
-5. After explicit AI spending authorization, set `AI_CHAT_WORKER_ENABLED=true` in that service's existing protected configuration and start/restart **the chat service**. Do not change existing `AI_WORKER_ENABLED`, models, endpoints or keys. Check sanitized chat readiness, then manually ask a small question on an authorized Pro report. Refresh must not dispatch again. Disable/stop the chat service to pause chat; stored conversations/reports remain.
+Do not reset accounts, copy development data, change keys/models/endpoints, or alter existing spending authorization/worker-enable settings. Only restart/deploy when explicitly authorized. This work did not migrate or restart production.
 
-## Verification and limits
+## Verification and changed files
 
-The targeted [mock check](./scripts/check-product-chat.mjs) refuses non-loopback/non-disposable databases and replaces `fetch` with a throwing function. It uses a fresh empty database named `ddv_chat_check`, applies migrations **only there**, creates disposable fixtures, and covers authentication/Pro/email/account status, CSRF/ownership, idempotency, order/concurrency, image relationships/references/budget, refresh without inference, actual abort and late response rejection, expired leases and changed-report isolation. Never run it against an existing application database.
+Targeted PostgreSQL mock check: [check-product-chat.mjs](./scripts/check-product-chat.mjs). Refuses non-loopback/non-disposable databases and forbids `fetch`; uses a fresh empty `ddv_chat_check` DB and applies migrations only there. Covers owner/Pro/email/status/CSRF, idempotency/concurrency/cancel/late output/lease, no-image delivery scope, exact selected images/foreign IDs, provenance, no duplicate image budgeting/base64 tokens, preflight without queue creation, new sessions/history and legacy citation compatibility. Real model answer quality is not checked by this mock.
+
+Local browser check: [check-chat-browser.mjs](./scripts/check-chat-browser.mjs), with loopback Vite and installed Chromium only. It creates/removes temporary harness files, mocks every API/image request and blocks non-loopback requests. Covers picker/max4, image question draft, purpose/no inference, IME/Enter/Shift+Enter, explicit citation→comment viewer, source version, old mapping fallback, preserved draft on preflight rejection, new session/refresh without inference and 390/1280px layout.
 
 ```sh
-# Supply only the address of a NEW disposable local database, no production env.
+# Fresh disposable loopback database only, never an app/production database:
 NODE_ENV=test AI_PROVIDER=mock APP_BASE_URL=http://localhost:3000 \
  DATABASE_URL=postgresql://postgres@127.0.0.1:DISPOSABLE_PORT/ddv_chat_check \
  node scripts/check-product-chat.mjs
+# With local Vite running; uses /usr/bin/google-chrome unless overridden:
+CHAT_CHECK_BASE_URL=http://127.0.0.1:4174 node scripts/check-chat-browser.mjs
 ```
 
-No real AI, crawling, email, production migration, commit, push or deployment was performed for this feature. Real multilingual answer quality, provider-side billing/cancellation, live fallback and browser/mobile/IME interactions require later manual acceptance. Existing report behavior is protected by leaving its pipeline files unchanged; the large regression suite was intentionally not run.
+Changed: [010 migration](./migrations/010_chat_sessions_evidence.sql); [chat context](./server/ai-chat-context.mjs), [API](./server/ai-chat-api.mjs), [worker core](./server/ai-chat-worker-core.mjs), [worker readiness](./server/ai-chat-worker.mjs); [AIChat](./src/AIChat.tsx), [answer renderer](./src/AIChatAnswer.tsx), [chat-only viewer](./src/AIChatEvidence.tsx), [AIReport integration](./src/AIReport.tsx), [styles](./src/styles.css); both check scripts and this README. Existing migrations and stored report content are unchanged.
 
+No large suite, real provider inference, crawl, email, production migration/restart, commit, push or deployment. Production typo interpretation, answer quality/language, accurate visual reasoning, live fallback/billing and remote cancellation still need future real-provider acceptance. Mock checks do not prove these behaviors.
 
-## Changed files and completed checks
-
-- UI: [AIChat.tsx](./src/AIChat.tsx), [AIReport.tsx](./src/AIReport.tsx), [styles.css](./src/styles.css).
-- API/context/provider: [ai-api.mjs](./server/ai-api.mjs), [ai-chat-api.mjs](./server/ai-chat-api.mjs), [ai-chat-context.mjs](./server/ai-chat-context.mjs), [ai-chat-provider.mjs](./server/ai-chat-provider.mjs), [ai-chat-transport.mjs](./server/ai-chat-transport.mjs).
-- Worker: [ai-chat-worker-core.mjs](./server/ai-chat-worker-core.mjs), [ai-chat-worker.mjs](./server/ai-chat-worker.mjs), [chat-worker-start.mjs](./server/chat-worker-start.mjs).
-- Storage/config/checks: [009_product_chat.sql](./migrations/009_product_chat.sql), [.env.example](./.env.example), [package.json](./package.json), [check-product-chat.mjs](./scripts/check-product-chat.mjs), and this document.
-
-Completed locally: `npm run typecheck` once (passed), `npm run build` once (passed), server-module syntax checks, `git diff --check`, and the targeted mock check against a fresh temporary PostgreSQL 17 container. The final mock pass includes the existing safe image validator. The container/database were removed afterward. No broad test suite was run. Browser/IME/mobile interaction and real provider execution remain unverified.
+Completed in this source revision: TypeScript typecheck and production build passed; final targeted PostgreSQL 17 mock and local Chrome checks passed; `git diff --check` passed. The temporary PostgreSQL container and browser harness files were removed and the local Vite process was stopped. These checks used mock responses only and do not verify real AI understanding or visual-answer quality.

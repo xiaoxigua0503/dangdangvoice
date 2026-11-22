@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {pool,transaction} from './db.mjs';
 import {numberEnv} from './ai-config.mjs';
-import {loadChatContext,validateChat,CHAT_PROTOCOL} from './ai-chat-context.mjs';
+import {loadChatContext,validateChat,CHAT_PROTOCOLS,BUDGET_MESSAGES} from './ai-chat-context.mjs';
 import {chatModel,inferChat} from './ai-chat-provider.mjs';
 const eligible=`u.plan='pro' AND u.verified_at IS NOT NULL AND u.disabled_at IS NULL AND (u.pro_expires_at IS NULL OR u.pro_expires_at>now())`;
 export async function claimChat(){return transaction(async c=>{
@@ -13,9 +13,9 @@ export async function claimChat(){return transaction(async c=>{
  const running=+(await c.query("SELECT count(*) n FROM ai_chat_requests WHERE state='running' OR (state='cancelled' AND lease_until>now())")).rows[0].n;
  if(running>=numberEnv('AI_CHAT_CONCURRENCY',1,1,4))return null;
  const row=(await c.query(`SELECT r.*,v.user_id,v.job_id FROM ai_chat_requests r JOIN ai_chat_conversations v ON v.id=r.conversation_id JOIN users u ON u.id=v.user_id
-   WHERE r.state='pending' AND r.protocol=$1 AND r.config->>'provider'=$2 AND ${eligible}
+   WHERE r.state='pending' AND r.protocol=ANY($1::text[]) AND r.config->>'provider'=$2 AND ${eligible}
    AND ($3::uuid IS NULL OR v.job_id=$3::uuid)
-   ORDER BY r.created_at,r.id FOR UPDATE OF r SKIP LOCKED LIMIT 1`,[CHAT_PROTOCOL,process.env.AI_PROVIDER||'qwen',process.env.AI_WORKER_JOB_ID||null])).rows[0];
+   ORDER BY r.created_at,r.id FOR UPDATE OF r SKIP LOCKED LIMIT 1`,[CHAT_PROTOCOLS,process.env.AI_PROVIDER||'qwen',process.env.AI_WORKER_JOB_ID||null])).rows[0];
  if(!row)return null;
  row.lease_token=randomUUID();
  await c.query("UPDATE ai_chat_requests SET state='running',lease_token=$2,lease_until=now()+interval '30 seconds',updated_at=now() WHERE id=$1",[row.id,row.lease_token]);return row;
@@ -57,6 +57,7 @@ export async function executeChat(request,{signal,inferFn=inferChat}={}){
     throw error;
    }
    await c.query('UPDATE ai_chat_attempts SET ended_at=now(),usage=$2 WHERE id=$1',[attempt,output.usage]);attempt=null;
+   scope={...scope,deliveredImageIds:context.images.map(i=>i.id),deliveryConfirmed:true,deliveryMode:config.provider==='mock'?'mock':'provider'};
    controller.signal.throwIfAborted();
    const result=validateChat(output.result,context.input,context.images);
    // Re-check immutable report identity and entitlement immediately before commit.
@@ -64,8 +65,8 @@ export async function executeChat(request,{signal,inferFn=inferChat}={}){
    await c.query('SELECT id FROM users WHERE id=$1 FOR SHARE',[context.conv.user_id]);
    await loadChatIdentity(c,context.conv);
    if(!await renewChat(request))throw new Error('cancelled');
-   await c.query(`UPDATE ai_chat_requests SET state='completed',result=$3,usage=$4,lease_token=NULL,lease_until=NULL,updated_at=now()
-    WHERE id=$1 AND lease_token=$2 AND state='running' AND lease_until>now()`,[request.id,request.lease_token,result,await totalUsage(c,request.id,config.provider==='mock')]);
+   await c.query(`UPDATE ai_chat_requests SET state='completed',result=$3,usage=$4,scope=$5,lease_token=NULL,lease_until=NULL,updated_at=now()
+    WHERE id=$1 AND lease_token=$2 AND state='running' AND lease_until>now()`,[request.id,request.lease_token,result,await totalUsage(c,request.id,config.provider==='mock'),scope]);
    await c.query('COMMIT');
    return;
   }
@@ -73,7 +74,7 @@ export async function executeChat(request,{signal,inferFn=inferChat}={}){
  }catch(error){
   if(!c)throw error;
   await c.query('ROLLBACK');
-  const safe=['context_budget_exceeded','model_limits_unverified','provider_models_unavailable','image_unavailable','snapshot_changed','invalid_reference'];
+  const safe=[...Object.keys(BUDGET_MESSAGES),'context_budget_exceeded','model_limits_unverified','provider_models_unavailable','image_unavailable','snapshot_changed','invalid_reference'];
   const code=controller.signal.aborted?'cancelled':safe.includes(error.message)?error.message:'answer_failed';
   if(attempt)await c.query('UPDATE ai_chat_attempts SET ended_at=now(),error=$2 WHERE id=$1',[attempt,code]);
   await c.query("UPDATE ai_chat_requests SET state=$3,error=$4,usage=$5,lease_token=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_token=$2 AND state='running'",[request.id,request.lease_token,code==='cancelled'?'cancelled':'failed',code,await totalUsage(c,request.id,false)]);
