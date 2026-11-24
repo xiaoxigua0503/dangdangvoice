@@ -2,6 +2,7 @@ import {collectionLease} from './server/collection-lease.mjs';
 import {logProductionStatus} from "./server/production-status.mjs";
 import {pool} from "./server/db.mjs";
 import {adminAPI} from "./server/admin-api.mjs";
+import {enterpriseAPI} from './server/enterprise-api.mjs';
 import {aiAPI} from './server/ai-api.mjs';
 import { accounts, requireUser, checkOrigin, canonicalRequest, initializeCsrf, appOrigin } from './server/accounts.mjs';
 /**
@@ -761,6 +762,7 @@ export async function requestHandler(req, res) {
       try { checkOrigin(req); } catch(e) { return json(res, e.status, {msg:e.message,code:e.code}); }
     }
     if (await adminAPI(req,res,url,readBody,json)) return;
+    if (await enterpriseAPI(req,res,url,readBody,json)) return;
     if (await aiAPI(req,res,url,readBody,json)) return;
     if (await accounts(req,res,url,readBody,json)) return;
     if (url.pathname === "/api/relay") {

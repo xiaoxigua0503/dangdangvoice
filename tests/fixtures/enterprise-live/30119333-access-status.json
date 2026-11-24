@@ -1,0 +1,25 @@
+{
+  "productId": "30119333",
+  "sourceUrl": "https://product.dangdang.com/30119333.html",
+  "observedAt": "2026-11-24T04:40:16.068Z",
+  "httpStatus": 200,
+  "contentType": "text/html; charset=utf-8",
+  "initialResponseBytes": 16124,
+  "initialRules": {
+    "html": true,
+    "commentNodes": false,
+    "deniedTitle": false,
+    "scriptShell": false,
+    "inlineDominant": true,
+    "wafMarker": true,
+    "challengeMarker": true,
+    "substantialScript": true,
+    "runtimeAccess": true
+  },
+  "initialHiddenRenderData": true,
+  "renderedTitle": "Verification",
+  "renderedVerificationPrompt": true,
+  "renderedAliyunCaptcha": true,
+  "callbackResponsesObserved": [],
+  "note": "Sanitized structural capture only; all tokens, trace IDs, script and renderData contents omitted. No product values observed."
+}

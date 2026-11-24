@@ -14,14 +14,24 @@ try {
  const db=new URL(process.env.WORKER_DATABASE_URL||process.env.DATABASE_URL);
  console.log('AI worker：PostgreSQL 连接与迁移状态就绪');
  console.log('ai_worker_config '+JSON.stringify({pid:process.pid, environment:process.env.NODE_ENV||'development',databaseLocal:['127.0.0.1','localhost','[::1]'].includes(db.hostname),database:identity.db,schema:identity.schema,provider:config.provider,model:config.model,endpointHost:new URL(config.endpoint).hostname,jobScope:process.env.AI_WORKER_JOB_ID||null,capabilities:WORKER_CAPABILITIES}));
-} catch {
- await pool.end();throw new Error('AI worker 数据库未就绪，请检查生产直连地址与迁移');
+} catch (error) {
+ const code=error.code||error.cause?.code||'unknown';
+ const reason=error.message==='migration_required'?'missing_migration_011':code==='ECONNREFUSED'?'database_not_listening':code==='28P01'?'database_authentication_failed':code==='3D000'?'database_missing':code==='42P01'?'schema_or_migrations_missing':['ENOTFOUND','ETIMEDOUT'].includes(code)?'database_network_error':'database_query_failed';
+ console.error('ai_worker_database_not_ready '+JSON.stringify({code,reason,usesWorkerOverride:!!process.env.WORKER_DATABASE_URL}));
+ await pool.end();throw new Error('AI worker 数据库未就绪：'+reason);
 }
 if(process.env.AI_NETWORK_DIAGNOSTICS==='true'&&process.env.AI_NETWORK_DIAGNOSTIC_JOB_ID){const {networkDiagnostics}=await import('./ai-network-diagnostics.mjs');await networkDiagnostics(config,pool);}
 const enabled=process.env.AI_WORKER_ENABLED==='true'||(process.env.NODE_ENV!=='production'&&process.env.AI_WORKER_ENABLED!=='false');
 console.log("ai_worker_readiness "+JSON.stringify({enabled,providerReady:providerReady(config)}));
 if(!enabled)console.log('AI worker 推理已暂停：需要显式 AI_WORKER_ENABLED=true 才能领取模型任务');
 if (!providerReady(config)) console.log('AI worker 等待配置：缺少 AI_API_KEY，不领取任务、不发送请求；设置后重启。');
+const enterpriseReady=!!(await pool.query("SELECT to_regclass('enterprise_tasks') ready")).rows[0]?.ready;
+const {runEnterpriseOne}=await import('./enterprise-worker.mjs');
+const inferenceEnabled=process.env.AI_WORKER_INFERENCE_ENABLED!=='false';
+const enterpriseBatchScope=!!process.env.ENTERPRISE_WORKER_BATCH_ID;
+if(enterpriseReady){const {ENTERPRISE_ENGINE,ENTERPRISE_PROTOCOL}=await import('./enterprise-context.mjs');console.log('enterprise_worker_runtime '+JSON.stringify({engine:ENTERPRISE_ENGINE,protocol:ENTERPRISE_PROTOCOL,model:config.model,provider:config.provider,batchScoped:enterpriseBatchScope}));}
+if(enterpriseReady){const {enterpriseBrowserPath}=await import('./enterprise-browser.mjs');console.log('enterprise_collector_readiness '+JSON.stringify({browserAvailable:!!await enterpriseBrowserPath(),inferenceEnabled}));}
+if(enterpriseReady&&enabled&&!providerReady(config))console.log('Enterprise 产品页采集可继续；模型任务仍等待密钥。');
 const controller = new AbortController();
 for (const event of ["SIGTERM", "SIGINT"])
   process.once(event, () => controller.abort());
@@ -32,9 +42,13 @@ console.log(
 );
 let lastIdleLog=0;
 async function loop() {
+  let enterpriseTurn=true;
   while (!controller.signal.aborted) {
     try {
-      const worked = enabled && providerReady(config) ? await runOne({ signal: controller.signal }) : false;
+      const enterprise=()=>enabled&&enterpriseReady?runEnterpriseOne({role:'report',allowModels:inferenceEnabled&&providerReady(config),signal:controller.signal}):false;
+      let worked=false;if(enterpriseTurn)worked=await enterprise();
+      if(!worked)worked=!enterpriseBatchScope&&enabled&&inferenceEnabled&&providerReady(config)?await runOne({signal:controller.signal}):false;
+      if(!worked&&!enterpriseTurn)worked=await enterprise();enterpriseTurn=!enterpriseTurn;
       if (worked) continue;
       if(Date.now()-lastIdleLog>30000) {
         lastIdleLog=Date.now();

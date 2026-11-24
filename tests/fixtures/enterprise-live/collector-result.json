@@ -1,0 +1,41 @@
+{
+  "note": "Actual local collector result; no product data was obtained. No model task was created for this batch.",
+  "listings": [
+    {
+      "product_id": "24193243",
+      "state": "paused",
+      "attempts": 2,
+      "no_product_snapshot": true,
+      "diagnostics": {
+        "code": "challenge_detected",
+        "stage": "product_document",
+        "outcome": "challenge_detected",
+        "sourceUrl": "https://product.dangdang.com/24193243.html",
+        "httpStatus": 200,
+        "collectedAt": "2026-11-24T04:42:37.668Z",
+        "contentType": "text/html; charset=utf-8",
+        "responseBytes": 16124,
+        "dynamicSources": "not_observed_no_verified_response",
+        "recognitionRule": "hidden_render_data_aliyun_script"
+      }
+    },
+    {
+      "product_id": "30119333",
+      "state": "paused",
+      "attempts": 2,
+      "no_product_snapshot": true,
+      "diagnostics": {
+        "code": "challenge_detected",
+        "stage": "product_document",
+        "outcome": "challenge_detected",
+        "sourceUrl": "https://product.dangdang.com/30119333.html",
+        "httpStatus": 200,
+        "collectedAt": "2026-11-24T04:42:37.876Z",
+        "contentType": "text/html; charset=utf-8",
+        "responseBytes": 16124,
+        "dynamicSources": "not_observed_no_verified_response",
+        "recognitionRule": "hidden_render_data_aliyun_script"
+      }
+    }
+  ]
+}

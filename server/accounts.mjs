@@ -49,8 +49,9 @@ const fail = (status, msg) => {
   throw Object.assign(new Error(msg), { status });
 };
 export const publicUser = (u) =>
-  u ? { id: u.id, email: u.email, verified: !!u.verified_at, plan: effectivePro(u) ? "pro" : "free", role: u.role || "user", proExpiresAt: u.pro_expires_at } : null;
+  u ? { id: u.id, email: u.email, verified: !!u.verified_at, plan: effectivePlan(u), role: u.role || "user", proExpiresAt: u.pro_expires_at } : null;
 export const effectivePro = (u) => !!u && !u.disabled_at && u.plan === 'pro' && (!u.pro_expires_at || new Date(u.pro_expires_at)>new Date());
+export const effectivePlan=u=>!!u&&!u.disabled_at&&['pro','enterprise'].includes(u.plan)&&(!u.pro_expires_at||new Date(u.pro_expires_at)>new Date())?u.plan:'free';
 export function mailStatus() { return { mode: capture ? 'capture' : 'smtp', configured: !capture && !!(process.env.SMTP_HOST && process.env.MAIL_FROM && process.env.SMTP_USER && process.env.SMTP_PASS), baseUrl: base, hostConfigured: !!process.env.SMTP_HOST, senderConfigured: !!process.env.MAIL_FROM, credentialsConfigured: !!(process.env.SMTP_USER && process.env.SMTP_PASS) }; }
 export const appOrigin = new URL(base).origin;
 const secureCookies = prod || new URL(base).protocol === 'https:';
@@ -103,7 +104,7 @@ export async function currentUser(req) {
   );
   const u=r.rows[0];
   if (!u || u.disabled_at) return null;
-  return {...u, plan: effectivePro(u) ? 'pro' : 'free'};
+  return {...u, plan: effectivePlan(u)};
 }
 export async function requireUser(req, verified = true) {
   if (!pool) fail(503, "账户服务未配置数据库，暂不可用");

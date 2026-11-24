@@ -1,0 +1,325 @@
+{
+  "capturedAt": "2026-11-24T10:24:47.490Z",
+  "conditions": "Anonymous Chrome navigation; page default Beijing/Changping/Chengbei from transfer. Price response carries no explicit region; not checkout price.",
+  "browserOnly": true,
+  "collector": "Only score-service public HTTP access verified; other routes blocked/unrecognized in Node HTTP verification.",
+  "sources": [
+    {
+      "productId": "30119333",
+      "route": "callback/product-info",
+      "request": {
+        "r": "callback/product-info",
+        "productId": "30119333",
+        "isCatalog": "0",
+        "shopId": "0",
+        "productType": "0"
+      },
+      "status": 200,
+      "body": {
+        "data": {
+          "spu": {
+            "price": {
+              "originalPrice": "168.00",
+              "salePrice": "138.00",
+              "endPriceExcVip": "168.00"
+            },
+            "promotion": {
+              "p102": {
+                "startTime": "1782835200",
+                "endTime": "1798732799",
+                "limitNumber": "10000",
+                "price": {
+                  "directPrice": "138.00"
+                },
+                "activityUrl": "http://promo.dangdang.com/6575370",
+                "promoId": "6575370",
+                "activity_tag": "限时抢",
+                "startTimeStr": "2026.07.01 00:00:00",
+                "endTimeStr": "2026.12.31 23:59:59"
+              }
+            },
+            "stock": {
+              "stockStatus": "1",
+              "stockType": "realStock"
+            }
+          }
+        }
+      }
+    },
+    {
+      "productId": "30119333",
+      "route": "callback/transfer",
+      "request": {
+        "r": "callback/transfer",
+        "productId": "30119333",
+        "isRegionPromo": "0",
+        "shopId": "0",
+        "customAddress": "1",
+        "stockStatus": "1",
+        "templateId": "0",
+        "provinceId": "-1",
+        "cityId": "-1",
+        "districtId": "-1",
+        "townId": "-1",
+        "areaId": "-1"
+      },
+      "status": 200,
+      "body": {
+        "data": {
+          "isPreSaleAppendCart": "0",
+          "wareHouseId": "30",
+          "stockType": "realStock",
+          "isLocalStore": "1",
+          "type": "0",
+          "srcWarehouseId": "",
+          "address": {
+            "province": {
+              "id": "111",
+              "name": "北京"
+            },
+            "city": {
+              "id": "1",
+              "name": "北京市"
+            },
+            "district": {
+              "id": "103",
+              "name": "昌平区"
+            },
+            "town": {
+              "id": "165220280",
+              "name": "城北街道"
+            }
+          }
+        },
+        "elapse": 0.10986328125,
+        "errMsg": "",
+        "location": "33.103"
+      }
+    },
+    {
+      "productId": "30119333",
+      "route": "callback/spu-prod",
+      "request": {
+        "r": "callback/spu-prod",
+        "productId": "30119333",
+        "shopId": "0"
+      },
+      "status": 200,
+      "body": {
+        "data": "",
+        "elapse": 0.025634765625,
+        "errMsg": "",
+        "location": "33.103"
+      }
+    },
+    {
+      "productId": "30119333",
+      "route": "callback/get-bang-rank",
+      "request": {
+        "r": "callback/get-bang-rank",
+        "productId": "30119333"
+      },
+      "status": 200,
+      "body": {
+        "data": {
+          "pathName": "历史新书",
+          "url": "http://bang.dangdang.com/books/newhotsales/01.36.00.00.00.00-recent7-0-0-1-1",
+          "rank": "6"
+        },
+        "elapse": 0.05078125,
+        "errMsg": "",
+        "location": "33.91"
+      }
+    },
+    {
+      "productId": "30119333",
+      "route": "callback/detail",
+      "browserOnly": true,
+      "snippets": [
+        {
+          "selector": "#content .descrip",
+          "text": "《洪业：清朝开国史》是著名历史学家魏斐德的代表作，曾获美国亚洲研究协会列文森中国研究书籍奖。费正清在《纽约书评》上高度评价《洪业》：“对于任何对中国真正感兴趣的人来说，从现在开始，魏斐德的书是他首先要读的最重要的著作之一。”欧立德也说《洪业》是“最能证明魏斐德叙事能力的作品”。 《洪业》把明清易代放在全球贸易、白银流动和气候危机的大背景下，揭示明末清初的中国并非孤立地经历王朝更替，而是处在世界市场、财政结构与生态压力交织的复杂变局之中。全书既细致描写崇祯朝廷的财政与军事困境、农民军兴起、满洲军事体制的形成、清军入关后的统治策略，以及南明诸政权的内部矛盾；也深入考察明清之际士人的忠节观念、降清士人的心理处境、满汉制度与意识形态的磨合，以及地方社会在战乱、赋役、族群关系变动中的重组，是叙事史学的典范之作。 作为经典名著，《洪业》已再版多次。本次修订，订正了旧版的若干讹误，增补插图和图表，并系统梳理、修订注释和参考文献，使全书更符合学术规范。修订版还特邀北京外国语大学历史学院/全球史研究院院长李雪涛撰写全新序言。",
+          "officialImages": []
+        },
+        {
+          "selector": "#abstract .descrip",
+          "text": "Ø 经典名著：美国汉学三杰之一魏斐德代表作，曾获美国亚洲研究协会列文森中国研究书籍奖，是研究明清鼎革不可替代的杰作。 Ø 全球视野：《洪业》将明清易代置于全球贸易、白银流动和气候危机等大背景下，揭示明末清初的中国并非孤立地发生王朝更替，而是处在世界市场、财政结构与生态压力交织的复杂变局之中。 Ø 流畅易读：魏斐德是公认的具有小说家天赋的历史学家，“他有讲故事的能力，在历史中注入血肉和生命力”。 全新修订：订正讹误；增补插图和图表；系统梳理、修订注释和参考文献；特邀北京外国语大学历史学院/全球史研究院院长李雪涛撰写全新序言。",
+          "officialImages": []
+        },
+        {
+          "selector": "#catalog .descrip",
+          "text": "目录 前 言 1第一章 北部边防 17第二章 崇祯朝廷 57第三章 满洲势力的扩张 102第四章 北京的陷落 148第五章 南京政权 213第六章 清朝统治的建立 278第七章 南京的陷落 342第八章 江南的抵抗运动 403第九章 北方中国的地方控制 468第十章 “时危计拙” 494第十一章 北方的最后平定 541",
+          "officialImages": []
+        },
+        {
+          "selector": "#feature .descrip",
+          "text": "",
+          "officialImages": [
+            "http://img52.ddimg.cn/99999990598419402.jpg"
+          ]
+        }
+      ]
+    },
+    {
+      "productId": "24193243",
+      "route": "callback/product-info",
+      "request": {
+        "r": "callback/product-info",
+        "productId": "24193243",
+        "isCatalog": "0",
+        "shopId": "0",
+        "productType": "0"
+      },
+      "status": 200,
+      "body": {
+        "data": {
+          "spu": {
+            "price": {
+              "originalPrice": "118.00",
+              "salePrice": "118.00",
+              "endPriceExcVip": "118.00"
+            },
+            "promotion": {
+              "p20": {
+                "title": "满额减",
+                "text": "每满&yen;100减&yen;50",
+                "activityUrl": "http://promo.dangdang.com/6577917",
+                "limitNumber": "10000",
+                "promoId": "6577917"
+              },
+              "p207": {
+                "title": "满N件折",
+                "text": "满1件打6折",
+                "activityUrl": "http://promo.dangdang.com/6577930",
+                "limitNumber": "10000",
+                "promoId": "6577930"
+              },
+              "p229": {
+                "gifts": [
+                  {
+                    "productId": "1900676918",
+                    "title": "+38.9元换购《洪业：清朝开国史》作者1：（美）魏斐德",
+                    "image": "//img3m8.ddimg.cn/74/16/1900676918-1_x_1.jpg",
+                    "originalPrice": "118",
+                    "exchangePrice": "38.9",
+                    "isEBook": "1",
+                    "isSpu": "0",
+                    "isMall": "1",
+                    "idx": "1"
+                  }
+                ],
+                "promoId": "6053522"
+              }
+            },
+            "stock": {
+              "stockStatus": "1",
+              "stockType": "realStock"
+            }
+          }
+        }
+      }
+    },
+    {
+      "productId": "24193243",
+      "route": "callback/transfer",
+      "request": {
+        "r": "callback/transfer",
+        "productId": "24193243",
+        "shopId": "0",
+        "provinceId": "-1",
+        "cityId": "-1",
+        "townId": "-1",
+        "areaId": "-1"
+      },
+      "status": 200,
+      "body": {
+        "data": {
+          "isPreSaleAppendCart": "0",
+          "wareHouseId": "30",
+          "stockType": "realStock",
+          "isLocalStore": "1",
+          "type": "0",
+          "srcWarehouseId": "",
+          "address": {
+            "province": {
+              "id": "111",
+              "name": "北京"
+            },
+            "city": {
+              "id": "1",
+              "name": "北京市"
+            },
+            "district": {
+              "id": "103",
+              "name": "昌平区"
+            },
+            "town": {
+              "id": "165220280",
+              "name": "城北街道"
+            }
+          }
+        },
+        "elapse": 0.025146484375,
+        "errMsg": "",
+        "location": "33.95"
+      }
+    },
+    {
+      "productId": "24193243",
+      "route": "callback/spu-prod",
+      "request": {
+        "r": "callback/spu-prod",
+        "productId": "24193243",
+        "shopId": "0"
+      },
+      "status": 200,
+      "body": {
+        "data": "",
+        "elapse": 0.005126953125,
+        "errMsg": "",
+        "location": "33.94"
+      }
+    },
+    {
+      "productId": "24193243",
+      "route": "callback/get-bang-rank",
+      "request": {
+        "r": "callback/get-bang-rank",
+        "productId": "24193243"
+      },
+      "status": 200,
+      "body": {
+        "unparsed": true
+      }
+    },
+    {
+      "productId": "24193243",
+      "route": "callback/detail",
+      "browserOnly": true,
+      "snippets": [
+        {
+          "selector": "#content .descrip",
+          "text": "魏斐德教授的史学名著《洪业：清朝开国史》讲述了中国王朝史中极具戏剧性的历史阶段——1644年明王朝的落幕及后续20年清王朝的巩固。作者从政治、经济、文化、社会、民族、国防诸方面的宏大背景之中，对一个帝国如何陷入困境、另一个帝国又如何重建秩序走向强盛的过程，进行了总体解剖与透视。在本书中，魏斐德希望通过清初对中华帝国秩序的重建来呈现的“洪业”，昭示在1840年鸦片战争西方势力到来之前，中国社会业已发生的一系列重要变化。",
+          "officialImages": []
+        },
+        {
+          "selector": "#abstract .descrip",
+          "text": "纪念魏斐德先生诞辰八十周年 美国汉学三杰之一 魏斐德 扛鼎之作 无与伦比的全球视角 娓娓动听的叙事能力 获得列文森中国研究书籍奖 通过明末清初的大时代变迁，展现中国历史*戏剧性的事件 著名海外学者费正清、史景迁、夏多明等倾情推荐 纪念魏斐德先生诞辰八十周年 曾获1987年度列文森中国研究书籍奖、1987年度加州大学出版社颁发的伯克利奖 《洪业》出版后，著名历史学家费正清盛赞魏斐德：“对于任何对中国真正感兴趣的人来说，从现在开始，魏斐德的书是他首先要读的*重要的著作之一。” 本次增订版《洪业》增加了导读文字、历史插图和代后记“远航”。魏斐德先生的夫人、旅美著名翻译家梁禾女士为我们再次提供了魏斐德先生的部分一手资料。",
+          "officialImages": []
+        },
+        {
+          "selector": "#catalog .descrip",
+          "text": "编者说明增订版序 前 言章 北部边防第二章 崇祯朝廷第三章 满族势力的扩张第四章 北京的陷落第五章 南京政权第六章 清朝统治的建立第七章 南京的陷落第八章 江南的抵抗运动第九章 北方中国的地方控制第十章 “危时计拙”",
+          "officialImages": []
+        },
+        {
+          "selector": "#feature .descrip",
+          "text": "",
+          "officialImages": [
+            "http://img54.ddimg.cn/99999990001137244.jpg"
+          ]
+        }
+      ]
+    }
+  ]
+}

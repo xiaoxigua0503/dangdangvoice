@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
+import {Enterprise} from './Enterprise';
 import {App} from './App';
 import {Admin} from './Admin';
 import type {User} from './Account';
@@ -13,7 +14,7 @@ export function Entry(){
  }
  const [user,setUser]=useState<User|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
  const seq=useRef(0),path=location.pathname;
- const home=(u:User)=>u.role==='admin'?'/admin':'/app';
+ const home=(u:User)=>u.role==='admin'?'/admin':u.plan==='enterprise'?'/enterprise':'/app';
  useEffect(()=>{
  let mounted=true;
  const refresh=async()=>{const n=++seq.current;try{const r=await api<{user:User|null}>('/api/auth/me');if(mounted&&n===seq.current){setError('');setUser(r.user);setLoading(false);}}catch(e){if(mounted&&n===seq.current){setError((e as Error).message);setLoading(false);}}};
@@ -25,6 +26,8 @@ export function Entry(){
  if(user&&['/','/login','/register'].includes(path)){location.replace(home(user));return null;}
  if(!user&&!routes[path]){location.replace('/login');return null;}
  if(user&&path==='/admin'&&user.role!=='admin'){location.replace('/app');return null;}
+ if(user&&path==='/enterprise'&&user.plan!=='enterprise'){location.replace('/app');return null;}
+ if(user&&user.plan==='enterprise'&&['/app','/enterprise'].includes(path))return <Enterprise key={user.id+user.plan} user={user} onUser={u=>{seq.current++;setUser(u);}}/>;
  if(user&&path==='/app')return <App key={user.id} sessionUser={user} onSessionChange={u=>{seq.current++;setUser(u);}}/>;
  if(user&&path==='/admin')return <Admin user={user} onLogout={()=>{seq.current++;setUser(null);location.replace('/login');}}/>;
  if(!routes[path]){location.replace(user?home(user):'/login');return null;}

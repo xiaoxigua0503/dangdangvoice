@@ -1,0 +1,8 @@
+<!doctype html><html><head><title>405</title></head><body>
+<div id="main"></div><textarea id="renderData" style="display:none">{}</textarea>
+<script>
+// Minimal structural fixture from the observed denial; request/session values removed.
+var renderData = JSON.parse(document.getElementById('renderData').value);
+var aliyunMessage = "Sorry, your request has been blocked as it may cause potential threats to the server's security.";
+document.getElementById('main').innerHTML = aliyunMessage;
+</script></body></html>

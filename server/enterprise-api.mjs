@@ -1,0 +1,76 @@
+import {randomUUID} from 'node:crypto';
+import {z} from 'zod';
+import {pool,transaction} from './db.mjs';
+import {requireUser} from './accounts.mjs';
+import {providerReady,digest} from './ai-config.mjs';
+import {normalizeLinks} from './enterprise-product.mjs';
+import {enterpriseEligible,enterpriseConfig,snapshotDocument,enterpriseBudget,ENTERPRISE_ENGINE,ENTERPRISE_PROTOCOL} from './enterprise-context.mjs';
+const fail=(status,msg)=>{throw Object.assign(new Error(msg),{status});};
+const uuid=z.string().uuid();
+export function enterpriseReportView(task){const stale=task.kind==='report'&&task.state==='pending'&&(task.config?.enterpriseEngine!==ENTERPRISE_ENGINE||task.config?.enterpriseProtocol!==ENTERPRISE_PROTOCOL);return {...task,...(stale?{state:'failed',error:'enterprise_version_changed'}:{}),configurationCompatible:!stale};}
+function reportPreflight(config,input){const budget=enterpriseBudget(config,input);if(!budget.fits)fail(budget.reason==='model_limits_unverified'?503:422,budget.reason==='model_limits_unverified'?'当前模型容量配置未确认，尚未发送请求；请补全已核实的 limits 后创建新报告':'输入超过已确认模型预算；未截取数据，请新建更小批次后重试');return budget;}
+export async function ownedBatch(c,owner,id){const r=(await c.query('SELECT * FROM enterprise_batches WHERE id=$1 AND user_id=$2',[id,owner])).rows[0];if(!r)fail(404,'研究批次不存在');return r;}
+async function ownedTask(c,owner,batch,id){const r=(await c.query('SELECT * FROM enterprise_tasks WHERE id=$1 AND user_id=$2 AND batch_id=$3',[id,owner,batch])).rows[0];if(!r)fail(404,'研究任务不存在');return r;}
+async function listingRows(c,owner,batch){return (await c.query(`SELECT l.id,l.product_id,l.input_urls,l.state,l.data,l.error,l.attempts,l.next_at,l.updated_at,(SELECT t.result->'collectionDiagnostics' FROM enterprise_tasks t WHERE t.listing_id=l.id AND t.user_id=l.user_id AND t.batch_id=l.batch_id AND t.kind='collect' ORDER BY t.created_at DESC,t.id DESC LIMIT 1) collection_diagnostics FROM enterprise_listings l WHERE l.user_id=$1 AND l.batch_id=$2 ORDER BY l.product_id`,[owner,batch])).rows;}
+async function idempotent(c,owner,key,kind,batch,inputHash){const old=(await c.query('SELECT * FROM enterprise_tasks WHERE user_id=$1 AND request_key=$2',[owner,key])).rows[0];if(old&&(old.kind!==kind||old.batch_id!==batch||inputHash&&old.input.clientHash!==inputHash))fail(409,'重复请求标识与原内容不一致');return old;}
+async function insertTask(c,{owner,batch,kind,key,listing=null,snapshot=null,conv=null,ordinal=null,question=null,focus=null,input,config}){const id=randomUUID();await c.query('INSERT INTO enterprise_tasks(id,user_id,batch_id,kind,request_key,listing_id,snapshot_id,conversation_id,ordinal,question,focus,input,config) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',[id,owner,batch,kind,key,listing,snapshot,conv,ordinal,question,focus,input,config]);return id;}
+async function lockOwner(c,id){const user=(await c.query('SELECT * FROM users WHERE id=$1 FOR UPDATE',[id])).rows[0];if(!enterpriseEligible(user))fail(403,'Enterprise 权限已变更');}
+async function rate(c,owner){const r=(await c.query("INSERT INTO auth_limits(key,hits,until_at) VALUES($1,1,now()+interval '15 minutes') ON CONFLICT(key) DO UPDATE SET hits=CASE WHEN auth_limits.until_at<now() THEN 1 ELSE auth_limits.hits+1 END,until_at=CASE WHEN auth_limits.until_at<now() THEN now()+interval '15 minutes' ELSE auth_limits.until_at END RETURNING hits",['enterprise-write:'+owner])).rows[0];if(r.hits>80)fail(429,'操作过于频繁，请稍后再试');}
+export async function enterpriseAPI(req,res,url,readBody,json){
+ if(!url.pathname.startsWith('/api/enterprise/'))return false;res.setHeader('Cache-Control','no-store');
+ try{
+  const u=await requireUser(req);if(!enterpriseEligible(u))fail(403,'此工作区需要有效 Enterprise 权限');
+  if(!(await pool.query("SELECT 1 FROM schema_migrations WHERE version='012_enterprise.sql'")).rowCount)fail(503,'Enterprise 数据服务尚未更新');
+  const config=enterpriseConfig(),page=Math.max(1,Math.min(10000,Math.floor(Number(url.searchParams.get('page'))||1))),reportPage=Math.max(1,Math.min(10000,Math.floor(Number(url.searchParams.get('reportPage'))||1))),conversationPage=Math.max(1,Math.min(10000,Math.floor(Number(url.searchParams.get('conversationPage'))||1)));let body={};if(req.method==='POST'){try{body=JSON.parse(await readBody(req,120000));}catch{fail(422,'请求内容无效或过大');}}
+  const path=url.pathname.replace('/api/enterprise/','').split('/'),batchId=path[1];
+  if(path[0]!=='batches')fail(404,'接口不存在');
+  if(path.length===1&&req.method==='GET'){json(res,200,{limits:{maxLinks:config.maxLinks},reportRuntime:{engine:ENTERPRISE_ENGINE,protocol:ENTERPRISE_PROTOCOL,model:config.model,provider:config.provider},rows:(await pool.query('SELECT id,title,input_count,created_at FROM enterprise_batches WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50 OFFSET $2',[u.id,(page-1)*50])).rows,total:+(await pool.query('SELECT count(*) n FROM enterprise_batches WHERE user_id=$1',[u.id])).rows[0].n,page});return true;}
+  if(path.length===1&&req.method==='POST'){
+   const b=z.object({requestKey:uuid,links:z.string().min(1).max(100000)}).strict().parse(body),parsed=normalizeLinks(b.links,config.maxLinks);if(!parsed.links.length)fail(422,'没有有效的当当商品链接');
+   const hash=digest(parsed),id=await transaction(async c=>{await lockOwner(c,u.id);const old=(await c.query('SELECT id,input_hash FROM enterprise_batches WHERE user_id=$1 AND request_key=$2',[u.id,b.requestKey])).rows[0];if(old){if(old.input_hash!==hash)fail(409,'请求标识已被其他内容使用');return old.id;}await rate(c,u.id);
+    const active=+(await c.query("SELECT count(*) n FROM enterprise_tasks WHERE user_id=$1 AND kind='collect' AND state IN ('pending','running')",[u.id])).rows[0].n;if(active+parsed.links.length>config.maxLinks)fail(429,'请等待已有采集完成');
+    const id=randomUUID();await c.query('INSERT INTO enterprise_batches(id,user_id,request_key,input_hash,title,input_count,rejected) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,u.id,b.requestKey,hash,'市场研究 · '+new Date().toISOString().slice(0,10),parsed.inputCount,JSON.stringify(parsed.rejected)]);
+    for(const link of parsed.links){const lid=randomUUID();await c.query('INSERT INTO enterprise_listings(id,batch_id,user_id,product_id,input_urls) VALUES($1,$2,$3,$4,$5)',[lid,id,u.id,link.productId,JSON.stringify(link.inputs)]);await insertTask(c,{owner:u.id,batch:id,kind:'collect',key:randomUUID(),listing:lid,input:{productId:link.productId,url:link.url},config});}return id;});json(res,200,{id});return true;
+  }
+  uuid.parse(batchId);const batch=await ownedBatch(pool,u.id,batchId);
+  if(path.length===2&&req.method==='GET'){
+   const listings=await listingRows(pool,u.id,batchId),tasks=(await pool.query("SELECT id,kind,listing_id,snapshot_id,conversation_id,state,error,actual_model,usage,result,config,created_at,updated_at,next_at FROM enterprise_tasks WHERE batch_id=$1 AND user_id=$2 AND kind='report' ORDER BY created_at DESC LIMIT 50 OFFSET $3",[batchId,u.id,(reportPage-1)*50])).rows;
+   json(res,200,{batch,listings,reports:tasks.map(t=>{const {config,...view}=enterpriseReportView(t);return view;}),reportsTotal:+(await pool.query("SELECT count(*) n FROM enterprise_tasks WHERE batch_id=$1 AND user_id=$2 AND kind='report'",[batchId,u.id])).rows[0].n,coverage:snapshotDocument(listings,batch).coverage,workerStatus:'unknown'});return true;
+  }
+  if(path[2]==='listings'&&path[4]==='retry'&&req.method==='POST'){
+   const b=z.object({requestKey:uuid}).strict().parse(body);uuid.parse(path[3]);const id=await transaction(async c=>{await ownedBatch(c,u.id,batchId);await lockOwner(c,u.id);const previous=await idempotent(c,u.id,b.requestKey,'collect',batchId);if(previous){if(previous.listing_id!==path[3])fail(409,'请求标识不匹配');return previous.id;}await rate(c,u.id);
+    const l=(await c.query('SELECT * FROM enterprise_listings WHERE id=$1 AND batch_id=$2 AND user_id=$3 FOR UPDATE',[path[3],batchId,u.id])).rows[0];if(!l)fail(404,'商品链接不存在');if(!['failed','paused','cancelled'].includes(l.state))fail(409,'该链接正在处理或已有结果');if(l.attempts>=config.collectionAttempts)fail(429,'该链接已达到重试上限');if(new Date(l.next_at)>new Date())fail(429,'请等待冷却时间结束后手动重试');
+    await c.query("UPDATE enterprise_listings SET state='pending',error=NULL,updated_at=now() WHERE id=$1",[l.id]);return insertTask(c,{owner:u.id,batch:batchId,kind:'collect',key:b.requestKey,listing:l.id,input:{productId:l.product_id,url:`https://product.dangdang.com/${l.product_id}.html`},config});});json(res,200,{id});return true;
+  }
+  if(path[2]==='cancel'&&req.method==='POST'){
+   await transaction(async c=>{await ownedBatch(c,u.id,batchId);await c.query("UPDATE enterprise_tasks SET state='cancelled',error='cancelled',updated_at=now() WHERE batch_id=$1 AND user_id=$2 AND state IN ('pending','running')",[batchId,u.id]);await c.query("UPDATE enterprise_listings SET state='cancelled',error='cancelled',updated_at=now() WHERE batch_id=$1 AND user_id=$2 AND state IN ('pending','running')",[batchId,u.id]);});json(res,200,{ok:true});return true;
+  }
+  if(path[2]==='report'&&req.method==='POST'){
+   const b=z.object({requestKey:uuid}).strict().parse(body);const id=await transaction(async c=>{await lockOwner(c,u.id);const old=await idempotent(c,u.id,b.requestKey,'report',batchId);if(old)return old.id;await rate(c,u.id);if(!providerReady(config))fail(503,'AI 服务尚未就绪');
+    await c.query("UPDATE enterprise_tasks SET state='failed',error='enterprise_version_changed',updated_at=now() WHERE user_id=$1 AND kind='report' AND state='pending' AND (config->>'enterpriseEngine' IS DISTINCT FROM $2 OR config->>'enterpriseProtocol' IS DISTINCT FROM $3)",[u.id,ENTERPRISE_ENGINE,ENTERPRISE_PROTOCOL]);
+    if((await c.query("SELECT 1 FROM enterprise_tasks WHERE user_id=$1 AND kind='report' AND state IN ('pending','running') LIMIT 1",[u.id])).rowCount)fail(409,'已有报告等待后台处理');
+    if(+(await c.query("SELECT count(*) n FROM enterprise_tasks WHERE batch_id=$1 AND kind='report' AND created_at>now()-interval '24 hours'",[batchId])).rows[0].n>=5)fail(429,'本批次今日报告请求已达上限');
+    const ls=await listingRows(c,u.id,batchId);if(ls.some(l=>['pending','running'].includes(l.state)))fail(409,'请等待采集结束或停止本轮后再创建报告');const doc=snapshotDocument(ls,batch);if(!doc.listings.length)fail(422,'尚无可分析的商品资料');
+    const input={snapshot:doc};reportPreflight(config,input);const sid=randomUUID();await c.query('INSERT INTO enterprise_snapshots(id,batch_id,user_id,document) VALUES($1,$2,$3,$4)',[sid,batchId,u.id,doc]);return insertTask(c,{owner:u.id,batch:batchId,kind:'report',key:b.requestKey,snapshot:sid,input,config});});json(res,200,{id});return true;
+  }
+  if(path[2]==='reports'){
+   uuid.parse(path[3]);const task=await ownedTask(pool,u.id,batchId,path[3]);if(task.kind!=='report')fail(404,'报告不存在');
+   if(path.length===4&&req.method==='GET'){const conversations=(await pool.query('SELECT id,created_at FROM enterprise_conversations WHERE user_id=$1 AND batch_id=$2 AND report_task_id=$3 ORDER BY created_at DESC LIMIT 50 OFFSET $4',[u.id,batchId,task.id,(conversationPage-1)*50])).rows;json(res,200,{task:{id:task.id,state:enterpriseReportView(task).state,result:task.result,error:enterpriseReportView(task).error,actual_model:task.actual_model,usage:task.usage,provider_requests:task.provider_requests,next_at:task.next_at,created_at:task.created_at,updated_at:task.updated_at,configurationCompatible:enterpriseReportView(task).configurationCompatible},snapshot:task.input.snapshot,conversations,conversationsTotal:+(await pool.query('SELECT count(*) n FROM enterprise_conversations WHERE user_id=$1 AND batch_id=$2 AND report_task_id=$3',[u.id,batchId,task.id])).rows[0].n});return true;}
+   if(path[4]==='chat'&&req.method==='POST'){
+    const b=z.object({requestKey:uuid,conversationId:uuid.nullable().optional(),question:z.string().trim().min(1).max(2000),listingIds:z.array(z.string().max(60)).max(50).default([]),shopKeys:z.array(z.string().max(80)).max(50).default([])}).strict().parse(body);
+    const clientHash=digest(b),r=await transaction(async c=>{await lockOwner(c,u.id);const old=await idempotent(c,u.id,b.requestKey,'chat',batchId,clientHash);if(old)return {id:old.id,conversationId:old.conversation_id};await rate(c,u.id);
+     if(task.state!=='completed'||!task.result||task.result.aiStatus==='unavailable')fail(409,'请先打开有效的已保存报告');if(!providerReady(config))fail(503,'AI 服务尚未就绪');const snapshot=task.input.snapshot;
+     if(b.listingIds.some(id=>!snapshot.listings.some(l=>l.listingId===id))||b.shopKeys.some(id=>!snapshot.statistics.shops.includes(id)))fail(422,'关注对象不属于这份快照');
+     let conv;if(b.conversationId){conv=(await c.query('SELECT * FROM enterprise_conversations WHERE id=$1 AND user_id=$2 AND batch_id=$3 AND report_task_id=$4 FOR UPDATE',[b.conversationId,u.id,batchId,task.id])).rows[0];if(!conv)fail(404,'会话不存在');}else{conv={id:randomUUID()};await c.query('INSERT INTO enterprise_conversations(id,batch_id,user_id,snapshot_id,report_task_id) VALUES($1,$2,$3,$4,$5)',[conv.id,batchId,u.id,task.snapshot_id,task.id]);}
+     const turns=(await c.query("SELECT ordinal,question,result,state FROM enterprise_tasks WHERE conversation_id=$1 ORDER BY ordinal",[conv.id])).rows;if(turns.length>=config.chatTurns)fail(422,'会话已达轮数上限，请开始新会话');if(turns.some(t=>['pending','running'].includes(t.state)))fail(409,'上一轮仍在处理中');
+     const history=turns.slice(-config.historyTurns).map(t=>({question:t.question,result:t.state==='completed'?t.result:null,state:t.state})),focus={listingIds:b.listingIds,shopKeys:b.shopKeys};const input={snapshot,report:task.result,question:b.question,focus,history,historyScope:{sent:history.length,total:turns.length},clientHash};if(!enterpriseBudget(config,input,'chat').fits)fail(422,'会话输入超过模型预算；问题未发送，请开始新会话或使用更小批次的报告');
+     const id=await insertTask(c,{owner:u.id,batch:batchId,kind:'chat',key:b.requestKey,snapshot:task.snapshot_id,conv:conv.id,ordinal:turns.length+1,question:b.question,focus,input,config});return {id,conversationId:conv.id};});json(res,200,r);return true;
+   }
+  }
+  if(path[2]==='conversations'&&req.method==='GET'){
+   uuid.parse(path[3]);const conv=(await pool.query('SELECT * FROM enterprise_conversations WHERE id=$1 AND batch_id=$2 AND user_id=$3',[path[3],batchId,u.id])).rows[0];if(!conv)fail(404,'会话不存在');const turns=(await pool.query('SELECT id,ordinal,question,focus,state,result,error,actual_model,usage,input->\'historyScope\' history_scope,created_at FROM enterprise_tasks WHERE conversation_id=$1 AND user_id=$2 ORDER BY ordinal',[conv.id,u.id])).rows;json(res,200,{conversation:conv,turns});return true;
+  }
+  if(path[2]==='tasks'&&path[4]==='cancel'&&req.method==='POST'){uuid.parse(path[3]);const target=await ownedTask(pool,u.id,batchId,path[3]);if(target.kind==='collect')await pool.query("UPDATE enterprise_listings SET state='cancelled',error='cancelled',updated_at=now() WHERE id=$1 AND state IN ('pending','running')",[target.listing_id]);await pool.query("UPDATE enterprise_tasks SET state='cancelled',error='cancelled',updated_at=now() WHERE id=$1 AND user_id=$2 AND state IN ('pending','running')",[path[3],u.id]);json(res,200,{ok:true});return true;}
+  fail(404,'接口不存在');
+ }catch(e){json(res,e instanceof z.ZodError?422:e.status||(['link_count_limit'].includes(e.message)?422:503),{msg:e instanceof z.ZodError?'请求格式不正确':e.status?e.message:e.message==='link_count_limit'?'链接数量超过限制或为空':'Enterprise 服务暂不可用'});return true;}
+}

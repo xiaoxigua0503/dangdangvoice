@@ -6,7 +6,7 @@ export interface User {
   id: string;
   email: string;
   verified: boolean;
-  plan?: "free" | "pro";
+  plan?: "free" | "pro" | "enterprise";
   role?: "user" | "admin";
   proExpiresAt?: string|null;
 }
@@ -21,8 +21,8 @@ export function Account({user,onChange,open,setOpen,children}:{user:User|null;on
   return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
  },[open,setOpen]);
  return <div className="header-account" id="account" ref={root} onBlur={e=>{if(e.relatedTarget&&!e.currentTarget.contains(e.relatedTarget as Node))setOpen(false);}}>
-  {user?<><button ref={trigger} className="account-trigger" aria-label="账户设置" aria-expanded={open} aria-controls="account-dropdown" onClick={()=>setOpen(!open)}><span aria-hidden="true">◉</span><small>{user.plan==='pro'?'Pro':'Free'}</small></button>
-  {open&&<div className="account-dropdown" id="account-dropdown"><b>账户设置</b><p className="account-email">{user.email}</p><p>{user.verified?'邮箱已验证':'邮箱待验证'} · {user.plan==='pro'?'Pro 会员':'Free 套餐'}</p>{user.proExpiresAt&&<p>有效期至 {new Date(user.proExpiresAt).toLocaleDateString('zh-CN')}</p>}{user.role==='admin'&&<a href="/admin">管理后台</a>}<a href="/forgot-password">重置密码</a>{!user.verified&&<a href="/verify-email">验证邮箱</a>}<button className="ghost-btn" onClick={async()=>{try{await postJson('/api/auth/logout',{});onChange(null);new BroadcastChannel('ddv-account-changed').postMessage({changed:true});location.replace('/login');}catch(e){setMsg((e as Error).message);}}}>退出登录</button>{msg&&<p role="status">{msg}</p>}{children}</div>}</>:<div className="account-guest"><a href="/login">登录</a><a href="/register">注册</a></div>}
+  {user?<><button ref={trigger} className="account-trigger" aria-label="账户设置" aria-expanded={open} aria-controls="account-dropdown" onClick={()=>setOpen(!open)}><span aria-hidden="true">◉</span><small>{user.plan==='enterprise'?'Enterprise':user.plan==='pro'?'Pro':'Free'}</small></button>
+  {open&&<div className="account-dropdown" id="account-dropdown"><b>账户设置</b><p className="account-email">{user.email}</p><p>{user.verified?'邮箱已验证':'邮箱待验证'} · {user.plan==='enterprise'?'Enterprise 企业版':user.plan==='pro'?'Pro 会员':'Free 套餐'}</p>{user.proExpiresAt&&<p>有效期至 {new Date(user.proExpiresAt).toLocaleDateString('zh-CN')}</p>}{user.role==='admin'&&<a href="/admin">管理后台</a>}<a href="/forgot-password">重置密码</a>{!user.verified&&<a href="/verify-email">验证邮箱</a>}<button className="ghost-btn" onClick={async()=>{try{await postJson('/api/auth/logout',{});onChange(null);new BroadcastChannel('ddv-account-changed').postMessage({changed:true});location.replace('/login');}catch(e){setMsg((e as Error).message);}}}>退出登录</button>{msg&&<p role="status">{msg}</p>}{children}</div>}</>:<div className="account-guest"><a href="/login">登录</a><a href="/register">注册</a></div>}
  </div>;
 }
 
