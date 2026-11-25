@@ -627,3 +627,83 @@ ol#sell-list{list-style:none;margin:0;padding:0;counter-reset:s}
 
 /* Enterprise metadata only; preserve report and DiDi layout. */
 .ent-metadata{max-width:420px}.ent-metadata p,.ent-source-dialog p,.ent-source-button{overflow-wrap:anywhere;white-space:normal}.ent-official-gallery{display:flex;flex-wrap:wrap;gap:8px}.ent-official-gallery a{display:block;max-width:88px}.ent-official-gallery img{width:88px!important;height:108px!important;object-fit:contain;background:#fff}.ent-source-dialog{overflow-wrap:anywhere}
+
+/* Enterprise report presentation; chat and shared report styles stay unchanged. */
+.ent-intake>summary,.ent-batch-records>summary{cursor:pointer;font-weight:600;color:#8d2f28}
+.ent-intake[open]>summary{margin-bottom:14px;font-size:21px}
+.ent-batch-records{min-width:0;margin:16px 0}
+.ent-report-overview{padding:22px 0 8px;border-bottom:2px solid #ad352b;margin-bottom:20px}
+.enterprise-shell .ent-report-overview h2{font-size:30px;line-height:1.4;margin:8px 0;overflow-wrap:anywhere}
+.ent-report-overview p{margin:6px 0}
+.ent-report-date,.ent-comparison-note{color:#7e6b5c;font-size:12px}
+.enterprise-shell .ent-short-warning{font-size:12px;color:#8d4933;margin:7px 0;line-height:1.6}
+.ent-comparison{padding:0;overflow:hidden}
+.ent-comparison>h2,.ent-comparison>.ent-comparison-note{margin:14px 18px}
+.ent-comparison .ent-table-wrap{padding-bottom:8px;overscroll-behavior-x:contain}
+.ent-comparison table{min-width:1160px;table-layout:fixed;font-size:13px}
+.ent-comparison th:nth-child(1){width:260px}
+.ent-comparison th:nth-child(2){width:140px}
+.ent-comparison th:nth-child(3){width:155px}
+.ent-comparison th:nth-child(4){width:180px}
+.ent-comparison th:nth-child(5){width:180px}
+.ent-comparison th:nth-child(6){width:160px}
+.ent-comparison td{padding:18px 14px;line-height:1.65}
+.ent-comparison th{font-size:12px;letter-spacing:.03em}
+.ent-comparison tbody tr:nth-child(even){background:#fcf6ec}
+.ent-product-identity{display:flex;align-items:flex-start;gap:12px;min-width:0}
+.ent-product-identity>div:last-child{flex:1;min-width:0}
+.ent-cover{width:48px;flex:0 0 48px;min-height:68px;background:#f3e8d7;border:1px solid #e4d7c5;display:flex;align-items:center;justify-content:center}
+.ent-cover span{font-size:10px;color:#867460;text-align:center;padding:4px}
+.ent-comparison .ent-cover img{width:48px;height:68px;object-fit:contain}
+.ent-product-title{font-weight:600;color:#503128;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.6}
+.ent-full-title{font-size:11px;margin:7px 0;color:#7c6251}
+.ent-full-title p{margin:6px 0;font-size:12px}
+.ent-edition{display:block;font-size:12px;margin:8px 0;font-weight:500;color:#874638}
+.ent-comparison .ent-sale-price{font-size:20px;color:#a43129;display:block;line-height:1.5;margin-bottom:7px}
+.ent-comparison td small{margin:5px 0;line-height:1.65}
+.ent-promotions{list-style:none;padding:0;margin:0}
+.ent-promotions li+li{margin-top:12px;padding-top:10px;border-top:1px solid #e8ddcd}
+.ent-promo-label{display:inline-block!important;background:#f6e5d8;color:#8b382a!important;padding:2px 7px;border-radius:4px;font-size:12px;max-width:100%;overflow-wrap:anywhere}
+.ent-comparison .ent-metadata{margin-top:12px;font-size:12px}
+.ent-metadata summary{cursor:pointer;color:#856651}
+.ent-group-source{white-space:nowrap;max-width:100%;margin:0;font-size:12px}
+.ent-report-analysis .ent-table-wrap{border:1px solid #e6d8c6;border-radius:5px}
+.ent-analysis-table{border-collapse:collapse;width:100%;min-width:620px;font-size:14px;line-height:1.85;table-layout:fixed}
+.ent-analysis-table th,.ent-analysis-table td{padding:16px;text-align:left;vertical-align:top;border-bottom:1px solid #e8ddcf;overflow-wrap:anywhere;white-space:pre-wrap}
+.ent-analysis-table thead th{background:#f4eadb;color:#8d2f28;font-size:12px}
+.ent-analysis-table th:first-child{width:22%}
+.ent-analysis-table th:last-child{width:135px}
+.ent-analysis-table tbody th{font-size:13px;font-weight:500;color:#77543f}
+.ent-analysis-table tbody tr:last-child>*{border-bottom:0}
+.ent-checks{margin-top:22px;padding-top:6px;border-top:1px solid #e5d6c5}
+.ent-checks ul{list-style:none;padding:0;margin:0}
+.ent-checks li{display:flex;align-items:flex-start;gap:16px;padding:10px 0;border-top:1px solid #eee3d4;font-size:14px}
+.ent-checks li p{margin:0;flex:1}
+.ent-report-details{margin-top:24px;padding-top:14px;border-top:1px solid #e5d6c5;font-size:12px;color:#7d6856}
+.ent-source-group{clear:both;padding:16px 0}
+.ent-source-group select{display:block;max-width:100%;width:100%;padding:9px;font:inherit;background:#fffaf1;border:1px solid #cfbba4}
+.ent-table-wrap:focus-visible{outline:2px solid #ac3027;outline-offset:3px}
+@media(max-width:760px){
+ .enterprise-shell .ent-report-overview h2{font-size:25px}
+ .ent-comparison{padding:0}
+ .ent-checks li{flex-direction:column;gap:6px}
+ .ent-analysis-table th,.ent-analysis-table td{padding:12px}
+ .ent-product-title{-webkit-line-clamp:3}
+}
+.ent-mobile-scroll{display:none!important}
+@media(max-width:760px){
+ .ent-reading-report .ent-history{flex-wrap:nowrap;overflow-x:auto;align-items:center;width:100%;box-sizing:border-box;padding-bottom:10px}
+ .ent-reading-report .ent-history h2{width:auto;font-size:16px;flex:none;white-space:nowrap}
+ .ent-reading-report .ent-history-item{flex:0 0 150px}
+ .ent-reading-report .ent-history>.ghost-btn,.ent-reading-report .ent-history>.ent-actions{flex:none}
+ .ent-reading-report .ent-history>.ent-actions{flex-wrap:nowrap}
+ .ent-mobile-scroll{display:block!important;margin:0 18px;font-size:11px}
+ .ent-analysis-table{display:block;min-width:0;table-layout:auto}
+ .ent-analysis-table thead{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%)}
+ .ent-analysis-table tbody,.ent-analysis-table tr{display:block}
+ .ent-analysis-table tbody tr{padding:12px;border-bottom:1px solid #e8ddcf}
+ .ent-analysis-table tbody tr:last-child{border:0}
+ .ent-analysis-table tbody th,.ent-analysis-table tbody td{display:block;width:auto;padding:4px 0;border:0}
+ .ent-analysis-table tbody th{color:#8d2f28;font-weight:600}
+}
+@media(max-width:760px){.ent-analysis-table tbody th:first-child{width:auto}}
